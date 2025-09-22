@@ -16,7 +16,7 @@ DATA_CONFIG = {
     "stats_file": "data_stats.json",
     
     # 最佳模型的保存路径。
-    "save_path": "checkpoints/unet_wider_model.pth",
+    "save_path": "checkpoints/unet_model.pth",
     
     # 训练和验证时，图像被统一调整到的尺寸。
     "img_size": 256,
@@ -60,7 +60,7 @@ TRAIN_CONFIG = {
     # 早停机制的“耐心值”。
     # 如果验证集损失连续 N 个周期没有改善，则停止训练。
     # 对于更大的模型，可以适当增加此值，例如 15 或 20。
-    "patience": 15,
+    "patience": 1000,
     
     # 混合损失中，像素损失 (L1 Loss) 的权重。
     "lambda_pixel": 1.0,

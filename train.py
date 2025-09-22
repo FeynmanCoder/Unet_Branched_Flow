@@ -1,157 +1,200 @@
-# train.py (最終版 - 根治反向映射問題)
 
-import torch
-import torch.nn as nn
-from torch.utils.data import DataLoader
-from tqdm import tqdm
+import argparse
 import os
 import json
+import logging
+
 import numpy as np
+import torch
+import torch.nn as nn
 import torch.nn.functional as F
 import torchvision.transforms as T
+from torch.utils.data import DataLoader
+from tqdm import tqdm
 
 from dataset import ForceFieldDataset
 from model import UNet
 
-# --- 1. 輔助函數 ---
+logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 
-def get_or_compute_stats(stats_path, train_a_dir, train_b_dir):
+def get_stats(stats_path, train_a_dir, train_b_dir):
+    """
+    Load or compute normalization statistics for the dataset.
+    """
     if os.path.exists(stats_path):
-        print(f"成功加載已存在的統計文件: '{stats_path}'")
+        logging.info(f"Loading existing stats from '{stats_path}'")
         with open(stats_path, 'r') as f:
-            stats = json.load(f)
-        return stats
+            return json.load(f)
     
-    print(f"統計文件 '{stats_path}' 不存在。開始從訓練數據計算...")
+    logging.info(f"Stats file not found. Computing from training data...")
     
     def _compute(data_dir):
-        global_min = np.finfo(np.float32).max
-        global_max = np.finfo(np.float32).min
-        file_list = [f for f in os.listdir(data_dir) if f.endswith('.npy')]
-        for filename in tqdm(file_list, desc=f"處理 {os.path.basename(data_dir)}"):
-            path = os.path.join(data_dir, filename)
-            data = np.load(path)
-            global_min = min(np.min(data), global_min)
-            global_max = max(np.max(data), global_max)
-        return float(global_min), float(global_max)
+        all_files = [os.path.join(data_dir, f) for f in os.listdir(data_dir) if f.endswith('.npy')]
+        
+        min_val = np.finfo(np.float32).max
+        max_val = np.finfo(np.float32).min
+        
+        for f in tqdm(all_files, desc=f"Analyzing {os.path.basename(data_dir)}"):
+            data = np.load(f)
+            min_val = min(np.min(data), min_val)
+            max_val = max(np.max(data), max_val)
+            
+        return float(min_val), float(max_val)
 
-    stats_B = _compute(train_b_dir)
     stats_A = _compute(train_a_dir)
-    stats = {'input': {'min': stats_B[0], 'max': stats_B[1]}, 'target': {'min': stats_A[0], 'max': stats_A[1]}}
-    with open(stats_path, 'w') as f: json.dump(stats, f, indent=4)
-    print(f"\n統計信息計算完成並已保存至 '{stats_path}'")
+    stats_B = _compute(train_b_dir)
+    
+    stats = {
+        'input': {'min': stats_B[0], 'max': stats_B[1]},
+        'target': {'min': stats_A[0], 'max': stats_A[1]}
+    }
+    
+    with open(stats_path, 'w') as f:
+        json.dump(stats, f, indent=4)
+    logging.info(f"Stats computed and saved to '{stats_path}'")
+    
     return stats
 
-# --- 【核心修正】修正物理損失函數 ---
-def spectral_correlation_loss(pred_img, target_img):
+def spectral_correlation_loss(pred, target):
     """
-    通過比較完整的功率譜密度(PSD)來計算物理結構上的損失。
-    不再減去平均值，以解決反向映射的對稱性漏洞。
+    Calculate physics-based loss by comparing the Power Spectral Density (PSD).
+    This version avoids mean subtraction to prevent issues with inverse mapping.
     """
-    # 直接對歸一化後的圖像進行傅立葉變換
-    pred_fft = torch.fft.fft2(pred_img)
-    target_fft = torch.fft.fft2(target_img)
+    pred_fft = torch.fft.fft2(pred)
+    target_fft = torch.fft.fft2(target)
     
-    # 計算功率譜密度
     pred_psd = torch.abs(pred_fft)**2
     target_psd = torch.abs(target_fft)**2
     
-    # 計算PSD之間的均方誤差
-    loss = F.mse_loss(pred_psd, target_psd)
-    return loss
+    return F.mse_loss(pred_psd, target_psd)
 
-# --- 2. 設置參數 ---
-PROJECT_DIR = '.'
-DATA_DIR = '/lustre/home/2400011491/data/ai_train_data/data_20000'
-TRAIN_A_DIR = os.path.join(DATA_DIR, 'trainA')
-TRAIN_B_DIR = os.path.join(DATA_DIR, 'trainB')
-VAL_A_DIR = os.path.join(DATA_DIR, 'testA')
-VAL_B_DIR = os.path.join(DATA_DIR, 'testB')
-STATS_FILE = 'data_stats.json'
-
-TARGET_SIZE = 256
-LEARNING_RATE = 1e-4
-BATCH_SIZE = 4
-NUM_EPOCHS = 200
-WEIGHT_DECAY = 1e-5
-EARLY_STOP_PATIENCE = 10
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-MODEL_SAVE_PATH = os.path.join(PROJECT_DIR, "unet_model.pth")
-
-lambda_pixel = 1.0
-lambda_physics = 0.1
-
-print(f"Using device: {DEVICE}")
-print(f"Model will be saved to: {MODEL_SAVE_PATH}")
-
-# --- 3. 準備數據 ---
-stats = get_or_compute_stats(STATS_FILE, TRAIN_A_DIR, TRAIN_B_DIR)
-data_transform = T.Compose([T.Resize((TARGET_SIZE, TARGET_SIZE), antialias=True)])
-val_transform = T.Compose([T.Resize((TARGET_SIZE, TARGET_SIZE), antialias=True)])
-
-train_dataset = ForceFieldDataset(dir_A=TRAIN_A_DIR, dir_B=TRAIN_B_DIR, stats=stats, transform=data_transform)
-train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
-val_dataset = ForceFieldDataset(dir_A=VAL_A_DIR, dir_B=VAL_B_DIR, stats=stats, transform=val_transform)
-val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False)
-
-# --- 4. 初始化模型、損失函数和優化器 ---
-model = UNet(n_channels=1, n_classes=1).to(DEVICE)
-criterion_pixel = nn.L1Loss()
-optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
-scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=5, factor=0.1, verbose=True)
-
-# --- 5. 訓練循環 (現在是正確的邏輯) ---
-best_val_loss = float('inf')
-epochs_no_improve = 0
-
-for epoch in range(NUM_EPOCHS):
-    model.train()
-    loop = tqdm(train_loader, leave=True)
-    loop.set_description(f"Epoch [{epoch+1}/{NUM_EPOCHS}]")
-    
-    for inputs, targets in loop:
-        inputs, targets = inputs.to(DEVICE), targets.to(DEVICE)
-        outputs = model(inputs)
-        
-        # 使用修正後的物理損失
-        pixel_loss = criterion_pixel(outputs, targets)
-        physics_loss = spectral_correlation_loss(outputs, targets)
-        total_loss = lambda_pixel * pixel_loss + lambda_physics * physics_loss
-        
-        optimizer.zero_grad()
-        total_loss.backward()
-        optimizer.step()
-        
-        loop.set_postfix(pixel_loss=pixel_loss.item(), physics_loss=physics_loss.item())
-
-    # 驗證模型
+def evaluate(model, dataloader, criterion, device):
+    """
+    Evaluate the model on the validation set.
+    """
     model.eval()
-    val_loss = 0.0
+    total_loss = 0
     with torch.no_grad():
-        for inputs, targets in val_loader:
-            inputs, targets = inputs.to(DEVICE), targets.to(DEVICE)
+        for inputs, targets in dataloader:
+            inputs, targets = inputs.to(device), targets.to(device)
             outputs = model(inputs)
-            loss = criterion_pixel(outputs, targets)
-            val_loss += loss.item()
+            loss = criterion(outputs, targets)
+            total_loss += loss.item()
+            
+    return total_loss / len(dataloader)
 
-    avg_val_loss = val_loss / len(val_loader)
-    print(f"Epoch [{epoch+1}/{NUM_EPOCHS}], Avg Validation L1 Loss (normalized): {avg_val_loss:.6f}")
+def train(args):
+    """
+    Main training and validation loop.
+    """
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    logging.info(f"Using device: {device}")
+
+    # --- Data Preparation ---
+    stats = get_stats(
+        args.stats_file,
+        os.path.join(args.data_path, 'trainA'),
+        os.path.join(args.data_path, 'trainB')
+    )
     
-    # 更新學習率
-    scheduler.step(avg_val_loss)
+    transform = T.Compose([T.Resize((args.img_size, args.img_size), antialias=True)])
+    
+    train_dataset = ForceFieldDataset(
+        dir_A=os.path.join(args.data_path, 'trainA'),
+        dir_B=os.path.join(args.data_path, 'trainB'),
+        stats=stats,
+        transform=transform
+    )
+    val_dataset = ForceFieldDataset(
+        dir_A=os.path.join(args.data_path, 'testA'),
+        dir_B=os.path.join(args.data_path, 'testB'),
+        stats=stats,
+        transform=transform
+    )
+    
+    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=4, pin_memory=True)
+    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=4, pin_memory=True)
 
-    # Early Stopping 邏輯
-    if avg_val_loss < best_val_loss:
-        print(f"Validation loss improved from {best_val_loss:.6f} to {avg_val_loss:.6f}. Saving model...")
-        best_val_loss = avg_val_loss
-        torch.save(model.state_dict(), MODEL_SAVE_PATH)
-        epochs_no_improve = 0
-    else:
-        epochs_no_improve += 1
-        print(f"Validation loss did not improve. Patience: {epochs_no_improve}/{EARLY_STOP_PATIENCE}")
+    # --- Model, Optimizer, Loss ---
+    model = UNet(n_channels=1, n_classes=1).to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=5, factor=0.1, verbose=True)
+    criterion_pixel = nn.L1Loss()
 
-    if epochs_no_improve >= EARLY_STOP_PATIENCE:
-        print("Early stopping triggered. Training finished.")
-        break
+    # --- Training Loop ---
+    best_val_loss = float('inf')
+    epochs_no_improve = 0
 
-print("Training finished.")
+    for epoch in range(args.epochs):
+        model.train()
+        epoch_loss = 0
+        
+        with tqdm(total=len(train_dataset), desc=f"Epoch {epoch + 1}/{args.epochs}", unit='img') as pbar:
+            for inputs, targets in train_loader:
+                inputs, targets = inputs.to(device), targets.to(device)
+                
+                outputs = model(inputs)
+                
+                pixel_loss = criterion_pixel(outputs, targets)
+                physics_loss = spectral_correlation_loss(outputs, targets)
+                total_loss = args.lambda_pixel * pixel_loss + args.lambda_physics * physics_loss
+                
+                optimizer.zero_grad()
+                total_loss.backward()
+                optimizer.step()
+                
+                pbar.update(inputs.size(0))
+                epoch_loss += total_loss.item()
+                pbar.set_postfix(**{'loss (batch)': total_loss.item()})
+
+        # --- Validation ---
+        avg_val_loss = evaluate(model, val_loader, criterion_pixel, device)
+        logging.info(f"Validation L1 Loss: {avg_val_loss:.6f}")
+        
+        scheduler.step(avg_val_loss)
+
+        # --- Save Model & Early Stopping ---
+        if avg_val_loss < best_val_loss:
+            logging.info(f"Validation loss improved from {best_val_loss:.6f} to {avg_val_loss:.6f}. Saving model...")
+            best_val_loss = avg_val_loss
+            os.makedirs(os.path.dirname(args.save_path), exist_ok=True)
+            torch.save(model.state_dict(), args.save_path)
+            epochs_no_improve = 0
+        else:
+            epochs_no_improve += 1
+            logging.info(f"Validation loss did not improve. Patience: {epochs_no_improve}/{args.patience}")
+
+        if epochs_no_improve >= args.patience:
+            logging.info("Early stopping triggered.")
+            break
+            
+    logging.info("Training finished.")
+
+def main():
+    parser = argparse.ArgumentParser(description="Train U-Net for Force Field Prediction")
+    
+    # Paths
+    parser.add_argument('--data-path', type=str, default='/lustre/home/2400011491/data/ai_train_data/data_20000', help='Root directory of the dataset')
+    parser.add_argument('--stats-file', type=str, default='data_stats.json', help='Path to normalization stats file')
+    parser.add_argument('--save-path', type=str, default='checkpoints/best_model.pth', help='Path to save the best model')
+
+    # Hyperparameters
+    parser.add_argument('--epochs', type=int, default=200, help='Number of training epochs')
+    parser.add_argument('--batch-size', type=int, default=4, help='Batch size')
+    parser.add_argument('--lr', type=float, default=1e-4, help='Learning rate')
+    parser.add_argument('--img-size', type=int, default=256, help='Image size for resizing')
+    parser.add_argument('--weight-decay', type=float, default=1e-5, help='Weight decay for Adam optimizer')
+    
+    # Loss weights
+    parser.add_argument('--lambda-pixel', type=float, default=1.0, help='Weight for pixel-wise L1 loss')
+    parser.add_argument('--lambda-physics', type=float, default=0.1, help='Weight for spectral correlation loss')
+
+    # Early stopping
+    parser.add_argument('--patience', type=int, default=10, help='Patience for early stopping')
+
+    args = parser.parse_args()
+    
+    train(args)
+
+if __name__ == '__main__':
+    main()
