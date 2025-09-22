@@ -11,14 +11,14 @@ from model import UNet
 
 # --- 1. 设置参数 ---
 PROJECT_DIR = '.'
-DATA_DIR = os.path.join(PROJECT_DIR, 'data')
+DATA_DIR = '/lustre/home/2400011491/data/ai_train_data/data_20000'
 TEST_A_DIR = os.path.join(DATA_DIR, 'testA')
 TEST_B_DIR = os.path.join(DATA_DIR, 'testB')
 
 # 加载训练好的模型
-MODEL_PATH = os.path.join(PROJECT_DIR, "unet_force_field_model.pth")
+MODEL_PATH = os.path.join(PROJECT_DIR, "unet_model.pth")
 # 创建一个专门的文件夹来存放预测结果
-OUTPUT_DIR = os.path.join(PROJECT_DIR, "predictions_from_unet")
+OUTPUT_DIR = os.path.join(PROJECT_DIR, "predictions")
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 # --- 2. 加载模型和数据 ---

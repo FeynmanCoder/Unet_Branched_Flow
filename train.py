@@ -62,7 +62,7 @@ def spectral_correlation_loss(pred_img, target_img):
 
 # --- 2. 設置參數 ---
 PROJECT_DIR = '.'
-DATA_DIR = '/lustre/home/2400011491/data/data_2000'
+DATA_DIR = '/lustre/home/2400011491/data/ai_train_data/data_20000'
 TRAIN_A_DIR = os.path.join(DATA_DIR, 'trainA')
 TRAIN_B_DIR = os.path.join(DATA_DIR, 'trainB')
 VAL_A_DIR = os.path.join(DATA_DIR, 'testA')
@@ -76,7 +76,7 @@ NUM_EPOCHS = 200
 WEIGHT_DECAY = 1e-5
 EARLY_STOP_PATIENCE = 10
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-MODEL_SAVE_PATH = os.path.join(PROJECT_DIR, "unet_final_corrected_model.pth")
+MODEL_SAVE_PATH = os.path.join(PROJECT_DIR, "unet_model.pth")
 
 lambda_pixel = 1.0
 lambda_physics = 0.1

@@ -26,8 +26,8 @@ data_stats.json
 *.out
 
 # Output directories from evaluation and prediction
-evaluation_results_final/
-predictions_from_unet/
+evaluation_results/
+predictions/
 
 # Jupyter Notebook checkpoints
 .ipynb_checkpoints/

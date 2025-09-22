@@ -62,13 +62,13 @@ def denormalize(data, min_val, max_val):
 
 # --- 2. 參數設定 ---
 PROJECT_DIR = '.'
-DATA_DIR = '/lustre/home/2400011491/data/data_2000'
+DATA_DIR = '/lustre/home/2400011491/data/ai_train_data/data_20000'
 TEST_A_DIR = os.path.join(DATA_DIR, 'testA') 
 TEST_B_DIR = os.path.join(DATA_DIR, 'testB') 
 STATS_FILE = 'data_stats.json'
 
-MODEL_PATH = os.path.join(PROJECT_DIR, "unet_final_model.pth") # 確保加載最終模型
-OUTPUT_DIR = os.path.join(PROJECT_DIR, "evaluation_results_final")
+MODEL_PATH = os.path.join(PROJECT_DIR, "unet_model.pth") # 確保加載最終模型
+OUTPUT_DIR = os.path.join(PROJECT_DIR, "evaluation_results")
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 TARGET_SIZE = 256
