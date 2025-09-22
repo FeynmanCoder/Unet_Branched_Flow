@@ -80,50 +80,72 @@ class OutConv(nn.Module):
     
 
 class UNet(nn.Module):
-    def __init__(self, n_channels, n_classes, bilinear=False):
+    def __init__(self, n_channels, n_classes, bilinear=False, depth=4, base_channels=64):
         super(UNet, self).__init__()
         self.n_channels = n_channels
         self.n_classes = n_classes
         self.bilinear = bilinear
+        self.depth = depth
+        self.base_channels = base_channels
         self.checkpointing = False
 
-        self.inc = (DoubleConv(n_channels, 64))
-        self.down1 = (Down(64, 128))
-        self.down2 = (Down(128, 256))
-        self.down3 = (Down(256, 512))
         factor = 2 if bilinear else 1
-        self.down4 = (Down(512, 1024 // factor))
-        self.up1 = (Up(1024, 512 // factor, bilinear))
-        self.up2 = (Up(512, 256 // factor, bilinear))
-        self.up3 = (Up(256, 128 // factor, bilinear))
-        self.up4 = (Up(128, 64, bilinear))
-        self.outc = (OutConv(64, n_classes))
+
+        self.inc = DoubleConv(n_channels, base_channels)
+
+        self.downs = nn.ModuleList()
+        in_ch = base_channels
+        for i in range(depth):
+            out_ch = in_ch * 2
+            self.downs.append(Down(in_ch, out_ch))
+            in_ch = out_ch
+
+        self.bottleneck = DoubleConv(in_ch, in_ch * 2 // factor)
+        in_ch = in_ch * 2
+
+        self.ups = nn.ModuleList()
+        for i in range(depth):
+            out_ch = in_ch // 2
+            self.ups.append(Up(in_ch, out_ch // factor, bilinear))
+            in_ch = out_ch // factor
+
+        self.outc = OutConv(in_ch, n_classes)
 
     def forward(self, x):
+        skip_connections = []
+
+        # Encoder path
+        x = self.inc(x)
+        for i in range(self.depth):
+            skip_connections.append(x)
+            if self.checkpointing:
+                x = torch.utils.checkpoint.checkpoint(self.downs[i], x)
+            else:
+                x = self.downs[i](x)
+        
+        # Bottleneck
         if self.checkpointing:
-            x1 = torch.utils.checkpoint.checkpoint(self.inc, x)
-            x2 = torch.utils.checkpoint.checkpoint(self.down1, x1)
-            x3 = torch.utils.checkpoint.checkpoint(self.down2, x2)
-            x4 = torch.utils.checkpoint.checkpoint(self.down3, x3)
-            x5 = torch.utils.checkpoint.checkpoint(self.down4, x4)
-            x = torch.utils.checkpoint.checkpoint(self.up1, x5, x4)
-            x = torch.utils.checkpoint.checkpoint(self.up2, x, x3)
-            x = torch.utils.checkpoint.checkpoint(self.up3, x, x2)
-            x = torch.utils.checkpoint.checkpoint(self.up4, x, x1)
-            logits = torch.utils.checkpoint.checkpoint(self.outc, x)
-            return logits
+            x = torch.utils.checkpoint.checkpoint(self.bottleneck, x)
         else:
-            x1 = self.inc(x)
-            x2 = self.down1(x1)
-            x3 = self.down2(x2)
-            x4 = self.down3(x3)
-            x5 = self.down4(x4)
-            x = self.up1(x5, x4)
-            x = self.up2(x, x3)
-            x = self.up3(x, x2)
-            x = self.up4(x, x1)
+            x = self.bottleneck(x)
+
+        # Decoder path
+        for i in range(self.depth):
+            skip = skip_connections.pop()
+            if self.checkpointing:
+                # Checkpoint requires a function and its inputs.
+                # The lambda function captures the current 'x' and 'skip' for the checkpoint.
+                x = torch.utils.checkpoint.checkpoint(lambda inp, sk: self.ups[i](inp, sk), x, skip)
+            else:
+                x = self.ups[i](x, skip)
+
+        # Output layer
+        if self.checkpointing:
+            logits = torch.utils.checkpoint.checkpoint(self.outc, x)
+        else:
             logits = self.outc(x)
-            return logits
+            
+        return logits
 
     def use_checkpointing(self):
         self.checkpointing = True
