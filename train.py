@@ -98,6 +98,7 @@ val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False)
 model = UNet(n_channels=1, n_classes=1).to(DEVICE)
 criterion_pixel = nn.L1Loss()
 optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
+scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=5, factor=0.1, verbose=True)
 
 # --- 5. 訓練循環 (現在是正確的邏輯) ---
 best_val_loss = float('inf')
@@ -136,6 +137,9 @@ for epoch in range(NUM_EPOCHS):
     avg_val_loss = val_loss / len(val_loader)
     print(f"Epoch [{epoch+1}/{NUM_EPOCHS}], Avg Validation L1 Loss (normalized): {avg_val_loss:.6f}")
     
+    # 更新學習率
+    scheduler.step(avg_val_loss)
+
     # Early Stopping 邏輯
     if avg_val_loss < best_val_loss:
         print(f"Validation loss improved from {best_val_loss:.6f} to {avg_val_loss:.6f}. Saving model...")
