@@ -1,0 +1,33 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual Environments
+venv
+.venv
+env
+.env
+
+# IDE configuration files
+.vscode/
+.idea/
+
+# Project-specific generated files
+
+# Model files
+*.pth
+
+# Data statistics
+data_stats.json
+
+# Slurm output files
+*.out
+
+# Output directories from evaluation and prediction
+evaluation_results_final/
+predictions_from_unet/
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
