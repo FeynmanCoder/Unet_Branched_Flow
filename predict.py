@@ -5,70 +5,123 @@ import torch
 import numpy as np
 import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader
+import torchvision.transforms as T
+import json
+from tqdm import tqdm
 
+# Import all settings from the config file
+import config
 from dataset import ForceFieldDataset
 from model import UNet
 
-# --- 1. 设置参数 ---
-PROJECT_DIR = '.'
-DATA_DIR = '/lustre/home/2400011491/data/ai_train_data/data_20000'
-TEST_A_DIR = os.path.join(DATA_DIR, 'testA')
-TEST_B_DIR = os.path.join(DATA_DIR, 'testB')
+def denormalize(data, min_val, max_val):
+    """Denormalize data from [0, 1] range to original scale."""
+    # Ensure data is a numpy array on the CPU
+    if isinstance(data, torch.Tensor):
+        data = data.cpu().numpy()
+    
+    # Handle cases where min and max are the same
+    if (max_val - min_val) == 0:
+        return data
+    return data * (max_val - min_val) + min_val
 
-# 加载训练好的模型
-MODEL_PATH = os.path.join(PROJECT_DIR, "unet_model.pth")
-# 创建一个专门的文件夹来存放预测结果
-OUTPUT_DIR = os.path.join(PROJECT_DIR, "predictions")
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+def predict():
+    """Main prediction function."""
+    # --- 1. Setup from Config ---
+    device = torch.device(config.DEVICE)
+    print(f"Using device: {device}")
 
-# --- 2. 加载模型和数据 ---
-print("Loading model and data...")
-os.makedirs(OUTPUT_DIR, exist_ok=True)
+    os.makedirs(config.PREDICTION_DIR, exist_ok=True)
 
-model = UNet(n_channels=1, n_classes=1).to(DEVICE)
-model.load_state_dict(torch.load(MODEL_PATH, map_location=torch.device(DEVICE)))
-model.eval()
+    # --- 2. Load Model and Data ---
+    print("Loading model and data...")
 
-test_dataset = ForceFieldDataset(dir_A=TEST_A_DIR, dir_B=TEST_B_DIR)
-test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False) 
+    # Load normalization statistics to correctly denormalize the output
+    try:
+        with open(config.STATS_FILE, 'r') as f:
+            stats = json.load(f)
+        print(f"Successfully loaded stats from '{config.STATS_FILE}'")
+    except FileNotFoundError:
+        print(f"Warning: Stats file not found at '{config.STATS_FILE}'. Predictions will be shown in normalized [0, 1] scale.")
+        # Create a dummy stats dict to allow the script to run
+        stats = {
+            'input': {'min': 0, 'max': 1},
+            'target': {'min': 0, 'max': 1}
+        }
 
-print("Starting prediction...")
+    # Load model
+    model = UNet(
+        n_channels=config.MODEL_N_CHANNELS,
+        n_classes=config.MODEL_N_CLASSES,
+        bilinear=config.MODEL_BILINEAR,
+        depth=config.MODEL_DEPTH,
+        base_channels=config.MODEL_BASE_CHANNELS
+    ).to(device)
 
-# --- 3. 进行预测并保存结果 ---
-with torch.no_grad():
-    for i, (inputs, targets) in enumerate(test_loader):
-        # 从数据集中获取原始文件名
-        original_filename = test_dataset.image_files[i]
-        base_filename = os.path.splitext(original_filename)[0]
+    try:
+        model.load_state_dict(torch.load(config.BEST_MODEL_PATH, map_location=device))
+        model.eval()
+        print(f"Successfully loaded model from '{config.BEST_MODEL_PATH}'")
+    except FileNotFoundError:
+        print(f"Error: Model file not found at '{config.BEST_MODEL_PATH}'. Please complete training.")
+        return
 
-        inputs = inputs.to(DEVICE)
-        predicted = model(inputs)
+    # Prepare DataLoader
+    data_transform = T.Compose([
+        T.Resize((config.IMG_SIZE, config.IMG_SIZE), antialias=True),
+    ])
+    test_dataset = ForceFieldDataset(
+        input_dir=config.TEST_B_DIR, 
+        target_dir=config.TEST_A_DIR, 
+        stats=stats, 
+        transform=data_transform
+    )
+    # Use a larger batch size for faster prediction if VRAM allows
+    test_loader = DataLoader(test_dataset, batch_size=config.BATCH_SIZE, shuffle=False, num_workers=config.NUM_WORKERS) 
+
+    print("Starting prediction...")
+
+    # --- 3. Perform Prediction and Save Results ---
+    with torch.no_grad():
+        for i, (inputs, targets) in enumerate(tqdm(test_loader, desc="Predicting")):
+            # Get original filenames for this batch
+            start_index = i * config.BATCH_SIZE
+            end_index = start_index + inputs.size(0)
+            original_filenames = test_dataset.image_files[start_index:end_index]
+
+            inputs = inputs.to(device)
+            predicted_normalized = model(inputs)
+            
+            # Process each image in the batch
+            for j in range(inputs.size(0)):
+                base_filename = os.path.splitext(original_filenames[j])[0]
+
+                # Denormalize images for visualization
+                input_img = denormalize(inputs[j].squeeze(), stats['input']['min'], stats['input']['max'])
+                target_img = denormalize(targets[j].squeeze(), stats['target']['min'], stats['target']['max'])
+                predicted_img = denormalize(predicted_normalized[j].squeeze(), stats['target']['min'], stats['target']['max'])
+                
+                # --- 4. Visualize and Save ---
+                fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+                fig.suptitle(f'Prediction for {original_filenames[j]}', fontsize=16)
+
+                axes[0].imshow(input_img, cmap='gray')
+                axes[0].set_title('Input Trajectory')
+                axes[0].axis('off')
+
+                axes[1].imshow(target_img, cmap='viridis')
+                axes[1].set_title('Ground Truth Force Field')
+                axes[1].axis('off')
+
+                axes[2].imshow(predicted_img, cmap='viridis')
+                axes[2].set_title('Predicted Force Field (U-Net)')
+                axes[2].axis('off')
+                
+                save_path = os.path.join(config.PREDICTION_DIR, f"prediction_{base_filename}.png")
+                plt.savefig(save_path, bbox_inches='tight')
+                plt.close(fig)
         
-        input_img = inputs.squeeze().cpu().numpy()
-        target_img = targets.squeeze().cpu().numpy()
-        predicted_img = predicted.squeeze().cpu().numpy()
-        
-        # --- 4. 可视化对比 ---
-        fig, axes = plt.subplots(1, 3, figsize=(18, 6))
-        fig.suptitle(f'Prediction for {original_filename}', fontsize=16)
+    print(f"Prediction finished. Results saved to '{config.PREDICTION_DIR}'.")
 
-        axes[0].imshow(input_img, cmap='gray')
-        axes[0].set_title('Input Trajectory')
-        axes[0].axis('off')
-
-        axes[1].imshow(target_img, cmap='viridis')
-        axes[1].set_title('Ground Truth Force Field')
-        axes[1].axis('off')
-
-        axes[2].imshow(predicted_img, cmap='viridis')
-        axes[2].set_title('Predicted Force Field (U-Net)')
-        axes[2].axis('off')
-        
-        # 使用原始文件名保存图像，更易于追溯
-        save_path = os.path.join(OUTPUT_DIR, f"prediction_{base_filename}.png")
-        plt.savefig(save_path, bbox_inches='tight')
-        plt.close(fig)
-        
-        print(f"Saved prediction for {original_filename} to {save_path}")
-
-print("Prediction finished.")
+if __name__ == '__main__':
+    predict()

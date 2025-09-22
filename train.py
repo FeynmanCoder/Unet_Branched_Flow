@@ -1,5 +1,4 @@
 
-import argparse
 import os
 import json
 import logging
@@ -12,6 +11,8 @@ import torchvision.transforms as T
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
+# Import all settings from the config file
+import config
 from dataset import ForceFieldDataset
 from model import UNet
 
@@ -58,7 +59,6 @@ def get_stats(stats_path, train_a_dir, train_b_dir):
 def spectral_correlation_loss(pred, target):
     """
     Calculate physics-based loss by comparing the Power Spectral Density (PSD).
-    This version avoids mean subtraction to prevent issues with inverse mapping.
     """
     pred_fft = torch.fft.fft2(pred)
     target_fft = torch.fft.fft2(target)
@@ -83,53 +83,78 @@ def evaluate(model, dataloader, criterion, device):
             
     return total_loss / len(dataloader)
 
-def train(args):
+def train():
     """
     Main training and validation loop.
     """
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device(config.DEVICE)
     logging.info(f"Using device: {device}")
 
     # --- Data Preparation ---
-    stats = get_stats(
-        args.stats_file,
-        os.path.join(args.data_path, 'trainA'),
-        os.path.join(args.data_path, 'trainB')
-    )
+    stats = get_stats(config.STATS_FILE, config.TRAIN_A_DIR, config.TRAIN_B_DIR)
     
-    transform = T.Compose([T.Resize((args.img_size, args.img_size), antialias=True)])
+    transform = T.Compose([T.Resize((config.IMG_SIZE, config.IMG_SIZE), antialias=True)])
     
     train_dataset = ForceFieldDataset(
-        dir_A=os.path.join(args.data_path, 'trainA'),
-        dir_B=os.path.join(args.data_path, 'trainB'),
+        input_dir=config.TRAIN_B_DIR,
+        target_dir=config.TRAIN_A_DIR,
         stats=stats,
         transform=transform
     )
     val_dataset = ForceFieldDataset(
-        dir_A=os.path.join(args.data_path, 'testA'),
-        dir_B=os.path.join(args.data_path, 'testB'),
+        input_dir=config.TEST_B_DIR,
+        target_dir=config.TEST_A_DIR,
         stats=stats,
         transform=transform
     )
     
-    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=4, pin_memory=True)
-    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=4, pin_memory=True)
+    train_loader = DataLoader(
+        train_dataset, 
+        batch_size=config.BATCH_SIZE, 
+        shuffle=True, 
+        num_workers=config.NUM_WORKERS, 
+        pin_memory=True
+    )
+    val_loader = DataLoader(
+        val_dataset, 
+        batch_size=config.BATCH_SIZE, 
+        shuffle=False, 
+        num_workers=config.NUM_WORKERS, 
+        pin_memory=True
+    )
 
     # --- Model, Optimizer, Loss ---
-    model = UNet(n_channels=1, n_classes=1).to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=5, factor=0.1, verbose=True)
+    model = UNet(
+        n_channels=config.MODEL_N_CHANNELS,
+        n_classes=config.MODEL_N_CLASSES,
+        bilinear=config.MODEL_BILINEAR,
+        depth=config.MODEL_DEPTH,
+        base_channels=config.MODEL_BASE_CHANNELS
+    ).to(device)
+
+    if config.USE_CHECKPOINTING:
+        model.use_checkpointing()
+        logging.info("Gradient checkpointing enabled.")
+
+    optimizer = torch.optim.Adam(
+        model.parameters(), 
+        lr=config.LEARNING_RATE, 
+        weight_decay=config.WEIGHT_DECAY
+    )
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, 'min', patience=5, factor=0.1, verbose=True
+    )
     criterion_pixel = nn.L1Loss()
 
     # --- Training Loop ---
     best_val_loss = float('inf')
     epochs_no_improve = 0
 
-    for epoch in range(args.epochs):
+    for epoch in range(config.EPOCHS):
         model.train()
         epoch_loss = 0
         
-        with tqdm(total=len(train_dataset), desc=f"Epoch {epoch + 1}/{args.epochs}", unit='img') as pbar:
+        with tqdm(total=len(train_dataset), desc=f"Epoch {epoch + 1}/{config.EPOCHS}", unit='img') as pbar:
             for inputs, targets in train_loader:
                 inputs, targets = inputs.to(device), targets.to(device)
                 
@@ -137,7 +162,7 @@ def train(args):
                 
                 pixel_loss = criterion_pixel(outputs, targets)
                 physics_loss = spectral_correlation_loss(outputs, targets)
-                total_loss = args.lambda_pixel * pixel_loss + args.lambda_physics * physics_loss
+                total_loss = config.LAMBDA_PIXEL * pixel_loss + config.LAMBDA_PHYSICS * physics_loss
                 
                 optimizer.zero_grad()
                 total_loss.backward()
@@ -157,44 +182,18 @@ def train(args):
         if avg_val_loss < best_val_loss:
             logging.info(f"Validation loss improved from {best_val_loss:.6f} to {avg_val_loss:.6f}. Saving model...")
             best_val_loss = avg_val_loss
-            os.makedirs(os.path.dirname(args.save_path), exist_ok=True)
-            torch.save(model.state_dict(), args.save_path)
+            os.makedirs(config.CHECKPOINT_DIR, exist_ok=True)
+            torch.save(model.state_dict(), config.BEST_MODEL_PATH)
             epochs_no_improve = 0
         else:
             epochs_no_improve += 1
-            logging.info(f"Validation loss did not improve. Patience: {epochs_no_improve}/{args.patience}")
+            logging.info(f"Validation loss did not improve. Patience: {epochs_no_improve}/{config.PATIENCE}")
 
-        if epochs_no_improve >= args.patience:
+        if epochs_no_improve >= config.PATIENCE:
             logging.info("Early stopping triggered.")
             break
             
     logging.info("Training finished.")
 
-def main():
-    parser = argparse.ArgumentParser(description="Train U-Net for Force Field Prediction")
-    
-    # Paths
-    parser.add_argument('--data-path', type=str, default='/lustre/home/2400011491/data/ai_train_data/data_20000', help='Root directory of the dataset')
-    parser.add_argument('--stats-file', type=str, default='data_stats.json', help='Path to normalization stats file')
-    parser.add_argument('--save-path', type=str, default='checkpoints/best_model.pth', help='Path to save the best model')
-
-    # Hyperparameters
-    parser.add_argument('--epochs', type=int, default=200, help='Number of training epochs')
-    parser.add_argument('--batch-size', type=int, default=4, help='Batch size')
-    parser.add_argument('--lr', type=float, default=1e-4, help='Learning rate')
-    parser.add_argument('--img-size', type=int, default=256, help='Image size for resizing')
-    parser.add_argument('--weight-decay', type=float, default=1e-5, help='Weight decay for Adam optimizer')
-    
-    # Loss weights
-    parser.add_argument('--lambda-pixel', type=float, default=1.0, help='Weight for pixel-wise L1 loss')
-    parser.add_argument('--lambda-physics', type=float, default=0.1, help='Weight for spectral correlation loss')
-
-    # Early stopping
-    parser.add_argument('--patience', type=int, default=10, help='Patience for early stopping')
-
-    args = parser.parse_args()
-    
-    train(args)
-
 if __name__ == '__main__':
-    main()
+    train()

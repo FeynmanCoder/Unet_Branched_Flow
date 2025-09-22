@@ -1,70 +1,92 @@
 # config.py
+import os
+import torch
 
-"""
-这是一个集中的配置文件，用于管理模型训练的所有超参数和路径。
-修改此文件中的值即可调整训练行为，无需更改源代码。
-"""
+# ==============================================================================
+# Paths
+# ==============================================================================
+# Root directory for the project
+PROJECT_DIR = '.'
 
-# -------------------
-# 数据与路径配置 (Data and Path Configuration)
-# -------------------
-DATA_CONFIG = {
-    # 数据集根目录。请根据你的实际环境修改此路径。
-    "data_path": "/lustre/home/2400011491/data/ai_train_data/data_20000",
-    
-    # 归一化统计文件的保存路径。
-    "stats_file": "data_stats.json",
-    
-    # 最佳模型的保存路径。
-    "save_path": "checkpoints/unet_model.pth",
-    
-    # 训练和验证时，图像被统一调整到的尺寸。
-    "img_size": 256,
-}
+# Root directory for the dataset
+# Use an absolute path for robustness, especially with different execution environments.
+DATA_DIR = '/lustre/home/2400011491/data/ai_train_data/data_20000'
 
-# -------------------
-# 模型配置 (Model Configuration)
-# -------------------
-MODEL_CONFIG = {
-    # U-Net模型的基础通道数。增加此值可以“加宽”网络，提升模型容量。
-    # 64 是原始大小, 96 或 128 是更宽的选择。
-    "base_channels": 96,
-    
-    # 输入图像的通道数 (例如，灰度图为1，RGB图为3)。
-    "n_channels": 1,
-    
-    # 模型输出的通道数。
-    "n_classes": 1,
-    
-    # 是否在解码器（上采样部分）使用双线性插值。
-    # False 表示使用转置卷积 (ConvTranspose2d)。
-    "bilinear": False,
-}
+# Subdirectories for training and testing data
+TRAIN_A_DIR = os.path.join(DATA_DIR, 'trainA')
+TRAIN_B_DIR = os.path.join(DATA_DIR, 'trainB')
+TEST_A_DIR = os.path.join(DATA_DIR, 'testA')
+TEST_B_DIR = os.path.join(DATA_DIR, 'testB')
 
-# -------------------
-# 训练超参数配置 (Training Hyperparameters)
-# -------------------
-TRAIN_CONFIG = {
-    # 最大训练周期数。
-    "epochs": 200,
-    
-    # 批次大小。如果你的GPU显存充足，可以适当增加此值，例如 8, 16, 32。
-    "batch_size": 8,
-    
-    # 优化器的学习率。
-    "lr": 1e-4,
-    
-    # 优化器的权重衰减 (L2正则化)。
-    "weight_decay": 1e-5,
-    
-    # 早停机制的“耐心值”。
-    # 如果验证集损失连续 N 个周期没有改善，则停止训练。
-    # 对于更大的模型，可以适当增加此值，例如 15 或 20。
-    "patience": 1000,
-    
-    # 混合损失中，像素损失 (L1 Loss) 的权重。
-    "lambda_pixel": 1.0,
-    
-    # 混合损失中，物理损失 (谱损失) 的权重。
-    "lambda_physics": 0.1,
-}
+# Path to the file for storing normalization statistics
+STATS_FILE = os.path.join(PROJECT_DIR, 'data_stats.json')
+
+# Directory to save model checkpoints
+CHECKPOINT_DIR = os.path.join(PROJECT_DIR, 'checkpoints')
+# Path to save the best model
+BEST_MODEL_PATH = os.path.join(CHECKPOINT_DIR, 'best_model.pth')
+
+# Directory for evaluation results
+EVALUATION_DIR = os.path.join(PROJECT_DIR, 'evaluation_results')
+
+# Directory for prediction results
+PREDICTION_DIR = os.path.join(PROJECT_DIR, 'predictions')
+
+
+# ==============================================================================
+# Model Parameters
+# ==============================================================================
+# Number of input channels for the U-Net (e.g., 1 for grayscale)
+MODEL_N_CHANNELS = 1
+# Number of output classes for the U-Net (e.g., 1 for the force field)
+MODEL_N_CLASSES = 1
+# Depth of the U-Net (number of down/up sampling layers)
+MODEL_DEPTH = 4
+# Number of base channels for the first convolutional layer
+MODEL_BASE_CHANNELS = 64
+# Whether to use bilinear upsampling. If False, uses ConvTranspose2d.
+MODEL_BILINEAR = True
+
+
+# ==============================================================================
+# Training Hyperparameters
+# ==============================================================================
+# Device to use for training ('cuda' or 'cpu')
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+# Number of training epochs
+EPOCHS = 200
+# Batch size for training and validation
+BATCH_SIZE = 16 # Increased from 4, adjust based on your VRAM
+# Learning rate for the Adam optimizer
+LEARNING_RATE = 1e-4
+# Weight decay for the Adam optimizer
+WEIGHT_DECAY = 1e-5
+# Image size (height and width) to which all images will be resized
+IMG_SIZE = 256
+# Number of worker processes for the DataLoader
+NUM_WORKERS = 4
+# Whether to use gradient checkpointing to save memory
+USE_CHECKPOINTING = False
+
+
+# ==============================================================================
+# Loss Function Weights
+# ==============================================================================
+# Weight for the pixel-wise L1 loss
+LAMBDA_PIXEL = 1.0
+# Weight for the physics-based spectral correlation loss
+LAMBDA_PHYSICS = 0.1
+
+
+# ==============================================================================
+# Early Stopping
+# ==============================================================================
+# Number of epochs with no improvement after which training will be stopped
+PATIENCE = 10
+
+
+# ==============================================================================
+# Evaluation Parameters
+# ==============================================================================
+# Number of visual samples to save during evaluation. -1 means all.
+NUM_VISUAL_SAMPLES = 20
