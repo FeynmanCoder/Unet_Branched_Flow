@@ -31,3 +31,6 @@ predictions_from_unet/
 
 # Jupyter Notebook checkpoints
 .ipynb_checkpoints/
+
+# Shell scripts for submission
+*.sh
