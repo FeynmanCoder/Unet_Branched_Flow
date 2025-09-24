@@ -102,8 +102,8 @@ def train():
         transform=transform
     )
     val_dataset = ForceFieldDataset(
-        input_dir=config.TEST_B_DIR,
-        target_dir=config.TEST_A_DIR,
+        input_dir=config.VALIDATION_B_DIR,
+        target_dir=config.VALIDATION_A_DIR,
         stats=stats,
         transform=transform
     )

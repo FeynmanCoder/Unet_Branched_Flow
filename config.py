@@ -17,6 +17,8 @@ TRAIN_A_DIR = os.path.join(DATA_DIR, 'trainA')
 TRAIN_B_DIR = os.path.join(DATA_DIR, 'trainB')
 TEST_A_DIR = os.path.join(DATA_DIR, 'testA')
 TEST_B_DIR = os.path.join(DATA_DIR, 'testB')
+VALIDATION_A_DIR = os.path.join(DATA_DIR, 'validationA')
+VALIDATION_B_DIR = os.path.join(DATA_DIR, 'validationB')
 
 # Path to the file for storing normalization statistics
 STATS_FILE = os.path.join(PROJECT_DIR, 'data_stats.json')
