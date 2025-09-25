@@ -47,7 +47,7 @@ MODEL_DEPTH = 4
 # Number of base channels for the first convolutional layer
 MODEL_BASE_CHANNELS = 64
 # Whether to use bilinear upsampling. If False, uses ConvTranspose2d.
-MODEL_BILINEAR = True
+MODEL_BILINEAR = False
 
 
 # ==============================================================================

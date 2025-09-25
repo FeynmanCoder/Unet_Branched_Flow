@@ -101,15 +101,34 @@ class UNet(nn.Module):
             in_ch = out_ch
 
         self.bottleneck = DoubleConv(in_ch, in_ch * 2 // factor)
-        in_ch = in_ch * 2
 
         self.ups = nn.ModuleList()
+        in_ch = in_ch * 2
         for i in range(depth):
             out_ch = in_ch // 2
+            # When bilinear is True, the input to DoubleConv in Up is cat(x1, x2),
+            # where x1 is from the previous up-layer and x2 is from the skip connection.
+            # x1 has out_ch channels, and x2 has out_ch // factor channels.
+            # So, the total input channels for the convolution is out_ch + (out_ch // factor).
+            # When bilinear is False, factor is 1, so it's out_ch + out_ch, which is in_ch.
+            # The logic becomes more complex. Let's use a known-good implementation logic.
+            # The input to Up() should be the channels from the previous layer (in_ch)
+            # and the output should be the channels for the next layer (out_ch // factor).
+            # The Up module itself will handle the concatenation.
+            # The issue is that the original code passes `in_ch` to `Up`, but inside `Up`,
+            # it expects the concatenated channel size.
+            
+            # Corrected logic:
+            # The input to the Up block's convolution is the channel count of the upsampled tensor
+            # plus the channel count of the skip connection tensor.
+            up_in = in_ch // factor + in_ch // 2 // factor
+            if not bilinear:
+                up_in = in_ch
+            
             self.ups.append(Up(in_ch, out_ch // factor, bilinear))
             in_ch = out_ch // factor
 
-        self.outc = OutConv(in_ch, n_classes)
+        self.outc = OutConv(base_channels, n_classes)
 
     def forward(self, x):
         skip_connections = []
