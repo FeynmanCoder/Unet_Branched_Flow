@@ -142,7 +142,7 @@ def train():
         weight_decay=config.WEIGHT_DECAY
     )
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, 'min', patience=5, factor=0.1, verbose=True
+        optimizer, 'min', patience=5, factor=0.1
     )
     criterion_pixel = nn.L1Loss()
 

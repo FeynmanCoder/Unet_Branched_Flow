@@ -10,7 +10,7 @@ PROJECT_DIR = '.'
 
 # Root directory for the dataset
 # Use an absolute path for robustness, especially with different execution environments.
-DATA_DIR = '/lustre/home/2400011491/data/ai_train_data/data_20000'
+DATA_DIR = '/lustre/home/2400011491/data/ai_train_data/data_2000'
 
 # Subdirectories for training and testing data
 TRAIN_A_DIR = os.path.join(DATA_DIR, 'trainA')
