@@ -1,4 +1,3 @@
-
 """ Parts of the U-Net model """
 
 import torch
@@ -49,7 +48,9 @@ class Up(nn.Module):
         # if bilinear, use the normal convolutions to reduce the number of channels
         if bilinear:
             self.up = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
-            self.conv = DoubleConv(in_channels, out_channels, in_channels // 2)
+            # The input to DoubleConv is the channel count from the upsampled layer (in_channels from previous layer)
+            # plus the channel count from the skip connection (in_channels // 2).
+            self.conv = DoubleConv(in_channels + in_channels // 2, out_channels, in_channels // 2)
         else:
             self.up = nn.ConvTranspose2d(in_channels, in_channels // 2, kernel_size=2, stride=2)
             self.conv = DoubleConv(in_channels, out_channels)
@@ -89,42 +90,23 @@ class UNet(nn.Module):
         self.base_channels = base_channels
         self.checkpointing = False
 
-        factor = 2 if bilinear else 1
-
         self.inc = DoubleConv(n_channels, base_channels)
 
+        # Encoder
         self.downs = nn.ModuleList()
         in_ch = base_channels
-        for i in range(depth):
-            out_ch = in_ch * 2
-            self.downs.append(Down(in_ch, out_ch))
-            in_ch = out_ch
-
+        for _ in range(depth):
+            self.downs.append(Down(in_ch, in_ch * 2))
+            in_ch *= 2
+        
+        factor = 2 if bilinear else 1
         self.bottleneck = DoubleConv(in_ch, in_ch * 2 // factor)
 
+        # Decoder
         self.ups = nn.ModuleList()
         in_ch = in_ch * 2
-        for i in range(depth):
+        for _ in range(depth):
             out_ch = in_ch // 2
-            # When bilinear is True, the input to DoubleConv in Up is cat(x1, x2),
-            # where x1 is from the previous up-layer and x2 is from the skip connection.
-            # x1 has out_ch channels, and x2 has out_ch // factor channels.
-            # So, the total input channels for the convolution is out_ch + (out_ch // factor).
-            # When bilinear is False, factor is 1, so it's out_ch + out_ch, which is in_ch.
-            # The logic becomes more complex. Let's use a known-good implementation logic.
-            # The input to Up() should be the channels from the previous layer (in_ch)
-            # and the output should be the channels for the next layer (out_ch // factor).
-            # The Up module itself will handle the concatenation.
-            # The issue is that the original code passes `in_ch` to `Up`, but inside `Up`,
-            # it expects the concatenated channel size.
-            
-            # Corrected logic:
-            # The input to the Up block's convolution is the channel count of the upsampled tensor
-            # plus the channel count of the skip connection tensor.
-            up_in = in_ch // factor + in_ch // 2 // factor
-            if not bilinear:
-                up_in = in_ch
-            
             self.ups.append(Up(in_ch, out_ch // factor, bilinear))
             in_ch = out_ch // factor
 
