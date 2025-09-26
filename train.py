@@ -127,9 +127,7 @@ def train():
     model = UNet(
         n_channels=config.MODEL_N_CHANNELS,
         n_classes=config.MODEL_N_CLASSES,
-        bilinear=config.MODEL_BILINEAR,
-        depth=config.MODEL_DEPTH,
-        base_channels=config.MODEL_BASE_CHANNELS
+        bilinear=config.MODEL_BILINEAR
     ).to(device)
 
     if config.USE_CHECKPOINTING:

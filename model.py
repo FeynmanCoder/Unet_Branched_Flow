@@ -1,4 +1,4 @@
-""" Parts of the U-Net model - Fixed version with correct channel calculations """
+""" Parts of the U-Net model - Based on milesial/Pytorch-UNet """
 
 import torch
 import torch.nn as nn
@@ -40,7 +40,7 @@ class Down(nn.Module):
 
 
 class Up(nn.Module):
-    """Upscaling then double conv - FIXED channel calculations"""
+    """Upscaling then double conv"""
 
     def __init__(self, in_channels, out_channels, bilinear=True):
         super().__init__()
@@ -48,13 +48,10 @@ class Up(nn.Module):
         # if bilinear, use the normal convolutions to reduce the number of channels
         if bilinear:
             self.up = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
-            # For bilinear upsampling, we need to account for concatenation:
-            # in_channels (from previous layer) + out_channels (from skip connection)
-            self.conv = DoubleConv(in_channels + out_channels, out_channels, out_channels)
+            self.conv = DoubleConv(in_channels, out_channels, in_channels // 2)
         else:
             self.up = nn.ConvTranspose2d(in_channels, in_channels // 2, kernel_size=2, stride=2)
-            # For transpose convolution: (in_channels // 2) + out_channels = total input channels
-            self.conv = DoubleConv(in_channels // 2 + out_channels, out_channels)
+            self.conv = DoubleConv(in_channels, out_channels)
 
     def forward(self, x1, x2):
         x1 = self.up(x1)
@@ -78,87 +75,55 @@ class OutConv(nn.Module):
 
     def forward(self, x):
         return self.conv(x)
-    
+
 
 class UNet(nn.Module):
-    """U-Net with FIXED channel calculations for proper skip connections"""
+    """U-Net: Convolutional Networks for Biomedical Image Segmentation
     
-    def __init__(self, n_channels, n_classes, bilinear=False, depth=4, base_channels=64):
+    Based on the original implementation from milesial/Pytorch-UNet
+    https://github.com/milesial/Pytorch-UNet
+    """
+    
+    def __init__(self, n_channels, n_classes, bilinear=False):
         super(UNet, self).__init__()
         self.n_channels = n_channels
         self.n_classes = n_classes
         self.bilinear = bilinear
-        self.depth = depth
-        self.base_channels = base_channels
-        self.checkpointing = False
 
-        self.inc = DoubleConv(n_channels, base_channels)
-
-        # Encoder
-        self.downs = nn.ModuleList()
-        in_ch = base_channels
-        for _ in range(depth):
-            self.downs.append(Down(in_ch, in_ch * 2))
-            in_ch *= 2
-        
+        self.inc = DoubleConv(n_channels, 64)
+        self.down1 = Down(64, 128)
+        self.down2 = Down(128, 256)
+        self.down3 = Down(256, 512)
         factor = 2 if bilinear else 1
-        self.bottleneck = DoubleConv(in_ch, in_ch * 2 // factor)
-
-        # Decoder - FIXED: 正确计算通道数
-        self.ups = nn.ModuleList()
-        # 从bottleneck开始的通道数
-        decoder_ch = in_ch * 2 // factor
-        # 存储编码器各层的输出通道数，用于skip connection
-        encoder_channels = [base_channels]
-        temp_ch = base_channels
-        for _ in range(depth):
-            temp_ch *= 2
-            encoder_channels.append(temp_ch)
-        
-        # 构建解码器层
-        for i in range(depth):
-            skip_ch = encoder_channels[-(i+2)]  # 对应的skip connection通道数
-            out_ch = skip_ch  # 输出通道数等于skip connection的通道数
-            self.ups.append(Up(decoder_ch, out_ch, bilinear))
-            decoder_ch = out_ch
-
-        self.outc = OutConv(base_channels, n_classes)
+        self.down4 = Down(512, 1024 // factor)
+        self.up1 = Up(1024, 512 // factor, bilinear)
+        self.up2 = Up(512, 256 // factor, bilinear)
+        self.up3 = Up(256, 128 // factor, bilinear)
+        self.up4 = Up(128, 64, bilinear)
+        self.outc = OutConv(64, n_classes)
 
     def forward(self, x):
-        skip_connections = []
-
-        # Encoder path
-        x = self.inc(x)
-        for i in range(self.depth):
-            skip_connections.append(x)
-            if self.checkpointing:
-                x = torch.utils.checkpoint.checkpoint(self.downs[i], x)
-            else:
-                x = self.downs[i](x)
-        
-        # Bottleneck
-        if self.checkpointing:
-            x = torch.utils.checkpoint.checkpoint(self.bottleneck, x)
-        else:
-            x = self.bottleneck(x)
-
-        # Decoder path
-        for i in range(self.depth):
-            skip = skip_connections.pop()
-            if self.checkpointing:
-                # Checkpoint requires a function and its inputs.
-                # The lambda function captures the current 'x' and 'skip' for the checkpoint.
-                x = torch.utils.checkpoint.checkpoint(lambda inp, sk: self.ups[i](inp, sk), x, skip)
-            else:
-                x = self.ups[i](x, skip)
-
-        # Output layer
-        if self.checkpointing:
-            logits = torch.utils.checkpoint.checkpoint(self.outc, x)
-        else:
-            logits = self.outc(x)
-            
+        x1 = self.inc(x)
+        x2 = self.down1(x1)
+        x3 = self.down2(x2)
+        x4 = self.down3(x3)
+        x5 = self.down4(x4)
+        x = self.up1(x5, x4)
+        x = self.up2(x, x3)
+        x = self.up3(x, x2)
+        x = self.up4(x, x1)
+        logits = self.outc(x)
         return logits
 
     def use_checkpointing(self):
-        self.checkpointing = True
+        """Enable gradient checkpointing for memory efficiency"""
+        self.inc = torch.utils.checkpoint(self.inc)
+        self.down1 = torch.utils.checkpoint(self.down1)
+        self.down2 = torch.utils.checkpoint(self.down2)
+        self.down3 = torch.utils.checkpoint(self.down3)
+        self.down4 = torch.utils.checkpoint(self.down4)
+        self.up1 = torch.utils.checkpoint(self.up1)
+        self.up2 = torch.utils.checkpoint(self.up2)
+        self.up3 = torch.utils.checkpoint(self.up3)
+        self.up4 = torch.utils.checkpoint(self.up4)
+        self.outc = torch.utils.checkpoint(self.outc)
