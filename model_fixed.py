@@ -1,4 +1,7 @@
-""" Parts of the U-Net model - Fixed version with correct channel calculations """
+# 将修复过的模型替换到你的项目中
+# 这个文件包含了修复后的完整model.py代码
+
+""" Parts of the U-Net model """
 
 import torch
 import torch.nn as nn
@@ -40,7 +43,7 @@ class Down(nn.Module):
 
 
 class Up(nn.Module):
-    """Upscaling then double conv - FIXED channel calculations"""
+    """Upscaling then double conv"""
 
     def __init__(self, in_channels, out_channels, bilinear=True):
         super().__init__()
@@ -81,8 +84,6 @@ class OutConv(nn.Module):
     
 
 class UNet(nn.Module):
-    """U-Net with FIXED channel calculations for proper skip connections"""
-    
     def __init__(self, n_channels, n_classes, bilinear=False, depth=4, base_channels=64):
         super(UNet, self).__init__()
         self.n_channels = n_channels
@@ -104,7 +105,7 @@ class UNet(nn.Module):
         factor = 2 if bilinear else 1
         self.bottleneck = DoubleConv(in_ch, in_ch * 2 // factor)
 
-        # Decoder - FIXED: 正确计算通道数
+        # Decoder - 正确计算通道数
         self.ups = nn.ModuleList()
         # 从bottleneck开始的通道数
         decoder_ch = in_ch * 2 // factor

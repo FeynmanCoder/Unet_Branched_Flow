@@ -1,4 +1,4 @@
-""" Parts of the U-Net model - Fixed version with correct channel calculations """
+""" Parts of the U-Net model """
 
 import torch
 import torch.nn as nn
@@ -40,7 +40,7 @@ class Down(nn.Module):
 
 
 class Up(nn.Module):
-    """Upscaling then double conv - FIXED channel calculations"""
+    """Upscaling then double conv"""
 
     def __init__(self, in_channels, out_channels, bilinear=True):
         super().__init__()
@@ -79,10 +79,9 @@ class OutConv(nn.Module):
     def forward(self, x):
         return self.conv(x)
     
+    
 
 class UNet(nn.Module):
-    """U-Net with FIXED channel calculations for proper skip connections"""
-    
     def __init__(self, n_channels, n_classes, bilinear=False, depth=4, base_channels=64):
         super(UNet, self).__init__()
         self.n_channels = n_channels
@@ -104,7 +103,7 @@ class UNet(nn.Module):
         factor = 2 if bilinear else 1
         self.bottleneck = DoubleConv(in_ch, in_ch * 2 // factor)
 
-        # Decoder - FIXED: 正确计算通道数
+        # Decoder - 正确计算通道数
         self.ups = nn.ModuleList()
         # 从bottleneck开始的通道数
         decoder_ch = in_ch * 2 // factor
@@ -162,3 +161,102 @@ class UNet(nn.Module):
 
     def use_checkpointing(self):
         self.checkpointing = True
+
+# # model.py
+
+# import torch
+# import torch.nn as nn
+# import torch.nn.functional as F # 我們需要引入 functional
+
+# class DoubleConv(nn.Module):
+#     def __init__(self, in_channels, out_channels, mid_channels=None):
+#         super().__init__()
+#         if not mid_channels:
+#             mid_channels = out_channels
+#         self.double_conv = nn.Sequential(
+#             nn.Conv2d(in_channels, mid_channels, kernel_size=3, padding=1, bias=False),
+#             nn.BatchNorm2d(mid_channels),
+#             nn.ReLU(inplace=True),
+#             nn.Conv2d(mid_channels, out_channels, kernel_size=3, padding=1, bias=False),
+#             nn.BatchNorm2d(out_channels),
+#             nn.ReLU(inplace=True)
+#         )
+#     def forward(self, x):
+#         return self.double_conv(x)
+
+# class Down(nn.Module):
+#     def __init__(self, in_channels, out_channels):
+#         super().__init__()
+#         self.maxpool_conv = nn.Sequential(
+#             nn.MaxPool2d(2),
+#             DoubleConv(in_channels, out_channels)
+#         )
+#     def forward(self, x):
+#         return self.maxpool_conv(x)
+
+# class Up(nn.Module):
+#     """Upscaling then double conv"""
+#     def __init__(self, in_channels, out_channels, bilinear=True):
+#         super().__init__()
+#         if bilinear:
+#             self.up = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
+#             self.conv = DoubleConv(in_channels, out_channels, in_channels // 2)
+#         else:
+#             self.up = nn.ConvTranspose2d(in_channels, in_channels // 2, kernel_size=2, stride=2)
+#             self.conv = DoubleConv(in_channels, out_channels)
+
+#     def forward(self, x1, x2):
+#         # x1 是來自上一個上採樣層的張量
+#         # x2 是來自下採樣路徑的、尺寸可能不匹配的張量
+#         x1 = self.up(x1)
+        
+#         # =======================================================
+#         # 【核心修改】處理尺寸不匹配問題
+#         # =======================================================
+#         # F.pad 用於填充，這裡我們計算 x1 和 x2 之間的尺寸差異
+#         diffY = x2.size()[2] - x1.size()[2]
+#         diffX = x2.size()[3] - x1.size()[3]
+
+#         # 對 x1 進行填充，使其尺寸與 x2 匹配
+#         x1 = F.pad(x1, [diffX // 2, diffX - diffX // 2,
+#                         diffY // 2, diffY - diffY // 2])
+#         # =======================================================
+        
+#         # 現在尺寸已經匹配，可以安全地進行拼接
+#         x = torch.cat([x2, x1], dim=1)
+#         return self.conv(x)
+
+# class OutConv(nn.Module):
+#     def __init__(self, in_channels, out_channels):
+#         super(OutConv, self).__init__()
+#         self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=1)
+#     def forward(self, x):
+#         return self.conv(x)
+
+# class UNet(nn.Module):
+#     def __init__(self, n_channels, n_classes, bilinear=False):
+#         super(UNet, self).__init__()
+#         self.inc = DoubleConv(n_channels, 64)
+#         self.down1 = Down(64, 128)
+#         self.down2 = Down(128, 256)
+#         self.down3 = Down(256, 512)
+#         factor = 2 if bilinear else 1
+#         self.down4 = Down(512, 1024 // factor)
+#         self.up1 = Up(1024, 512 // factor, bilinear)
+#         self.up2 = Up(512, 256 // factor, bilinear)
+#         self.up3 = Up(256, 128 // factor, bilinear)
+#         self.up4 = Up(128, 64, bilinear)
+#         self.outc = OutConv(64, n_classes)
+
+#     def forward(self, x):
+#         x1 = self.inc(x)
+#         x2 = self.down1(x1)
+#         x3 = self.down2(x2)
+#         x4 = self.down3(x3)
+#         x5 = self.down4(x4)
+#         x = self.up1(x5, x4)
+#         x = self.up2(x, x3)
+#         x = self.up3(x, x2)
+#         x = self.up4(x, x1)
+#         logits = self.outc(x)
+#         return logits
