@@ -77,7 +77,7 @@ USE_CHECKPOINTING = False
 # Weight for the pixel-wise L1 loss
 LAMBDA_PIXEL = 1.0
 # Weight for the physics-based spectral correlation loss
-LAMBDA_PHYSICS = 0.1
+LAMBDA_PHYSICS = 0
 
 
 # ==============================================================================
