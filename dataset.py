@@ -33,11 +33,11 @@ class ForceFieldDataset(Dataset):
         return len(self.image_files)
     
     def normalize(self, data, min_val, max_val):
-        """Normalize data to the [0, 1] range."""
+        """Normalize data to the [-1, 1] range."""
         # Avoid division by zero
         if (max_val - min_val) == 0:
             return data
-        return (data - min_val) / (max_val - min_val)
+        return 2 * (data - min_val) / (max_val - min_val) - 1
 
     def __getitem__(self, idx):
         img_name = self.image_files[idx]

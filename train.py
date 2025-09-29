@@ -68,9 +68,9 @@ def spectral_correlation_loss(pred, target):
     
     return F.mse_loss(pred_psd, target_psd)
 
-def evaluate(model, dataloader, criterion, device):
+def evaluate(model, dataloader, criterion_pixel, device):
     """
-    Evaluate the model on the validation set.
+    Evaluate the model on the validation set using the combined loss.
     """
     model.eval()
     total_loss = 0
@@ -78,7 +78,11 @@ def evaluate(model, dataloader, criterion, device):
         for inputs, targets in dataloader:
             inputs, targets = inputs.to(device), targets.to(device)
             outputs = model(inputs)
-            loss = criterion(outputs, targets)
+            
+            pixel_loss = criterion_pixel(outputs, targets)
+            physics_loss = spectral_correlation_loss(outputs, targets)
+            loss = config.LAMBDA_PIXEL * pixel_loss + config.LAMBDA_PHYSICS * physics_loss
+            
             total_loss += loss.item()
             
     return total_loss / len(dataloader)
@@ -172,7 +176,7 @@ def train():
 
         # --- Validation ---
         avg_val_loss = evaluate(model, val_loader, criterion_pixel, device)
-        logging.info(f"Validation L1 Loss: {avg_val_loss:.6f}")
+        logging.info(f"Validation Combined Loss: {avg_val_loss:.6f}")
         
         scheduler.step(avg_val_loss)
 
