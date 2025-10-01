@@ -40,8 +40,10 @@ PREDICTION_DIR = os.path.join(PROJECT_DIR, 'predictions')
 # ==============================================================================
 # Number of input channels for the U-Net (e.g., 1 for grayscale)
 MODEL_N_CHANNELS = 1
-# Number of output classes for the U-Net (e.g., 1 for the force field)
+# Number of output classes for the U-Net (e.g., 1 for regression, 8 for classification)
 MODEL_N_CLASSES = 1
+# Number of classes for classification approach (discretize continuous values)
+NUM_CLASSES = 8
 # Depth of the U-Net (number of down/up sampling layers)
 MODEL_DEPTH = 4
 # Number of base channels for the first convolutional layer

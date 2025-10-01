@@ -1,201 +1,172 @@
+﻿import os
+import sys
 
-import os
-import json
-import logging
+from monai.networks.nets import UNet
 
-import numpy as np
+os.environ["CUDA_VISIBLE_DEVICES"] = '2'
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-import torchvision.transforms as T
-from torch.utils.data import DataLoader
+import torch.optim as optim
+from torch.utils.data import Dataset, DataLoader
+import numpy as np
+import cv2
 from tqdm import tqdm
+import albumentations as A
+from albumentations.pytorch import ToTensorV2
+from torch.nn import functional as F
 
-# Import all settings from the config file
-import config
-from dataset import ForceFieldDataset
-from model import UNet
+# 从 config.py 导入配置
+from config import (IMG_SIZE, NUM_CLASSES, TRAIN_A_DIR as TRAIN_IMG_DIR, 
+                    TRAIN_B_DIR as TRAIN_MASK_DIR, VALIDATION_A_DIR as VAL_IMG_DIR, 
+                    VALIDATION_B_DIR as VAL_MASK_DIR, BATCH_SIZE, NUM_WORKERS, 
+                    LEARNING_RATE, EPOCHS, BEST_MODEL_PATH)
 
-logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 
-def get_stats(stats_path, train_a_dir, train_b_dir):
-    """
-    Load or compute normalization statistics for the dataset.
-    """
-    if os.path.exists(stats_path):
-        logging.info(f"Loading existing stats from '{stats_path}'")
-        with open(stats_path, 'r') as f:
-            return json.load(f)
-    
-    logging.info(f"Stats file not found. Computing from training data...")
-    
-    def _compute(data_dir):
-        all_files = [os.path.join(data_dir, f) for f in os.listdir(data_dir) if f.endswith('.npy')]
+class SegmentationDataset(Dataset):
+    def __init__(self, image_dir, mask_dir, transform=None):
+        self.image_dir = image_dir
+        self.mask_dir = mask_dir
+        self.transform = transform
+        self.images = os.listdir(image_dir)
+
+    def __len__(self):
+        return len(self.images)
+
+    def __getitem__(self, idx):
+        img_name = self.images[idx]
+        img_path = os.path.join(self.image_dir, img_name)
+        mask_path = os.path.join(self.mask_dir, img_name)
+
+        image = np.load(img_path)
+        mask = np.load(mask_path)
         
-        min_val = np.finfo(np.float32).max
-        max_val = np.finfo(np.float32).min
-        
-        for f in tqdm(all_files, desc=f"Analyzing {os.path.basename(data_dir)}"):
-            data = np.load(f)
-            min_val = min(np.min(data), min_val)
-            max_val = max(np.max(data), max_val)
-            
-        return float(min_val), float(max_val)
+        # 将连续的势能值离散化为NUM_CLASSES个类别
+        # 这是关键改进:将回归问题转换为分类问题,避免模型直接复制输入特征
+        mask = (mask * NUM_CLASSES)
+        mask[mask >= NUM_CLASSES] = NUM_CLASSES - 1
+        mask[mask < 0] = 0
 
-    stats_A = _compute(train_a_dir)
-    stats_B = _compute(train_b_dir)
-    
-    stats = {
-        'input': {'min': stats_B[0], 'max': stats_B[1]},
-        'target': {'min': stats_A[0], 'max': stats_A[1]}
-    }
-    
-    with open(stats_path, 'w') as f:
-        json.dump(stats, f, indent=4)
-    logging.info(f"Stats computed and saved to '{stats_path}'")
-    
-    return stats
+        if self.transform:
+            augmented = self.transform(image=image, mask=mask)
+            image = augmented['image']
+            mask = augmented['mask']
 
-def spectral_correlation_loss(pred, target):
+        return image, mask.long()
+
+
+def dice_loss_multiclass(pred, target, smooth=1e-5):
     """
-    Calculate physics-based loss by comparing the Power Spectral Density (PSD).
+    多分类Dice Loss - 帮助模型更好地学习分割边界
     """
-    pred_fft = torch.fft.fft2(pred)
-    target_fft = torch.fft.fft2(target)
+    pred = F.softmax(pred, dim=1)
+    one_hot = F.one_hot(target, NUM_CLASSES).permute(0, 3, 1, 2).float()
     
-    pred_psd = torch.abs(pred_fft)**2
-    target_psd = torch.abs(target_fft)**2
+    pred = pred.contiguous().view(pred.size(0), pred.size(1), -1)
+    one_hot = one_hot.contiguous().view(one_hot.size(0), one_hot.size(1), -1)
     
-    return F.mse_loss(pred_psd, target_psd)
+    intersection = (pred * one_hot).sum(dim=2)
+    dice = (2. * intersection + smooth) / (pred.sum(dim=2) + one_hot.sum(dim=2) + smooth)
+    return 1 - dice.mean()
 
-def evaluate(model, dataloader, criterion_pixel, device):
-    """
-    Evaluate the model on the validation set using the combined loss.
-    """
-    model.eval()
-    total_loss = 0
-    with torch.no_grad():
-        for inputs, targets in dataloader:
-            inputs, targets = inputs.to(device), targets.to(device)
-            outputs = model(inputs)
-            
-            pixel_loss = criterion_pixel(outputs, targets)
-            physics_loss = spectral_correlation_loss(outputs, targets)
-            loss = config.LAMBDA_PIXEL * pixel_loss + config.LAMBDA_PHYSICS * physics_loss
-            
-            total_loss += loss.item()
-            
-    return total_loss / len(dataloader)
 
-def train():
-    """
-    Main training and validation loop.
-    """
-    device = torch.device(config.DEVICE)
-    logging.info(f"Using device: {device}")
+ce_loss = nn.CrossEntropyLoss()
 
-    # --- Data Preparation ---
-    stats = get_stats(config.STATS_FILE, config.TRAIN_A_DIR, config.TRAIN_B_DIR)
-    
-    transform = T.Compose([T.Resize((config.IMG_SIZE, config.IMG_SIZE), antialias=True)])
-    
-    train_dataset = ForceFieldDataset(
-        input_dir=config.TRAIN_B_DIR,
-        target_dir=config.TRAIN_A_DIR,
-        stats=stats,
-        transform=transform
-    )
-    val_dataset = ForceFieldDataset(
-        input_dir=config.VALIDATION_B_DIR,
-        target_dir=config.VALIDATION_A_DIR,
-        stats=stats,
-        transform=transform
-    )
-    
-    train_loader = DataLoader(
-        train_dataset, 
-        batch_size=config.BATCH_SIZE, 
-        shuffle=True, 
-        num_workers=config.NUM_WORKERS, 
-        pin_memory=True
-    )
-    val_loader = DataLoader(
-        val_dataset, 
-        batch_size=config.BATCH_SIZE, 
-        shuffle=False, 
-        num_workers=config.NUM_WORKERS, 
-        pin_memory=True
-    )
 
-    # --- Model, Optimizer, Loss ---
-    model = UNet(
-        n_channels=config.MODEL_N_CHANNELS,
-        n_classes=config.MODEL_N_CLASSES,
-        bilinear=config.MODEL_BILINEAR
-    ).to(device)
+def combined_loss(pred, target):
+    """组合损失函数:交叉熵 + Dice Loss"""
+    ce = ce_loss(pred, target)
+    dice = dice_loss_multiclass(pred, target)
+    return ce + dice
 
-    if config.USE_CHECKPOINTING:
-        model.use_checkpointing()
-        logging.info("Gradient checkpointing enabled.")
-
-    optimizer = torch.optim.Adam(
-        model.parameters(), 
-        lr=config.LEARNING_RATE, 
-        weight_decay=config.WEIGHT_DECAY
-    )
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, 'min', patience=5, factor=0.1
-    )
-    criterion_pixel = nn.L1Loss()
-
-    # --- Training Loop ---
-    best_val_loss = float('inf')
-    epochs_no_improve = 0
-
-    for epoch in range(config.EPOCHS):
-        model.train()
-        epoch_loss = 0
-        
-        with tqdm(total=len(train_dataset), desc=f"Epoch {epoch + 1}/{config.EPOCHS}", unit='img') as pbar:
-            for inputs, targets in train_loader:
-                inputs, targets = inputs.to(device), targets.to(device)
-                
-                outputs = model(inputs)
-                
-                pixel_loss = criterion_pixel(outputs, targets)
-                physics_loss = spectral_correlation_loss(outputs, targets)
-                total_loss = config.LAMBDA_PIXEL * pixel_loss + config.LAMBDA_PHYSICS * physics_loss
-                
-                optimizer.zero_grad()
-                total_loss.backward()
-                optimizer.step()
-                
-                pbar.update(inputs.size(0))
-                epoch_loss += total_loss.item()
-                pbar.set_postfix(**{'loss (batch)': total_loss.item()})
-
-        # --- Validation ---
-        avg_val_loss = evaluate(model, val_loader, criterion_pixel, device)
-        logging.info(f"Validation Combined Loss: {avg_val_loss:.6f}")
-        
-        scheduler.step(avg_val_loss)
-
-        # --- Save Model & Early Stopping ---
-        if avg_val_loss < best_val_loss:
-            logging.info(f"Validation loss improved from {best_val_loss:.6f} to {avg_val_loss:.6f}. Saving model...")
-            best_val_loss = avg_val_loss
-            os.makedirs(config.CHECKPOINT_DIR, exist_ok=True)
-            torch.save(model.state_dict(), config.BEST_MODEL_PATH)
-            epochs_no_improve = 0
-        else:
-            epochs_no_improve += 1
-            logging.info(f"Validation loss did not improve. Patience: {epochs_no_improve}/{config.PATIENCE}")
-
-        if epochs_no_improve >= config.PATIENCE:
-            logging.info("Early stopping triggered.")
-            break
-            
-    logging.info("Training finished.")
 
 if __name__ == '__main__':
-    train()
+    # 确保输出目录存在
+    os.makedirs(os.path.dirname(BEST_MODEL_PATH), exist_ok=True)
+    
+    transform = A.Compose([
+        A.Resize(IMG_SIZE, IMG_SIZE),
+        A.HorizontalFlip(p=0.5),
+        A.VerticalFlip(p=0.5),
+        A.RandomRotate90(p=0.5),
+        ToTensorV2(),
+    ])
+
+    print('准备数据集')
+    train_dataset = SegmentationDataset(
+        image_dir=TRAIN_IMG_DIR,
+        mask_dir=TRAIN_MASK_DIR,
+        transform=transform
+    )
+
+    val_transform = A.Compose([
+        A.Resize(IMG_SIZE, IMG_SIZE),
+        ToTensorV2(),
+    ])
+    
+    val_dataset = SegmentationDataset(
+        image_dir=VAL_IMG_DIR,
+        mask_dir=VAL_MASK_DIR,
+        transform=val_transform
+    )
+
+    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=NUM_WORKERS)
+    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS)
+
+    print('开始训练')
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    
+    model = UNet(
+        in_channels=1,
+        out_channels=NUM_CLASSES,
+        spatial_dims=2,
+        channels=(32, 64, 128, 256, 320, 320),
+        strides=(2, 2, 2, 2, 2),
+    ).to(device)
+    
+    optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', patience=5, factor=0.5)
+
+    num_epochs = EPOCHS
+    best_val_loss = float('inf')
+
+    for epoch in range(num_epochs):
+        model.train()
+        running_loss = 0.0
+        train_bar = tqdm(train_loader, desc=f'Epoch {epoch + 1}/{num_epochs}', leave=False)
+
+        for images, masks in train_bar:
+            images = images.to(device, dtype=torch.float32)
+            masks = masks.to(device, dtype=torch.long)
+
+            optimizer.zero_grad()
+            outputs = model(images)
+            loss = combined_loss(outputs, masks)
+            loss.backward()
+            optimizer.step()
+
+            running_loss += loss.item() * images.size(0)
+            train_bar.set_postfix(loss=loss.item())
+
+        epoch_loss = running_loss / len(train_loader.dataset)
+
+        model.eval()
+        val_loss = 0.0
+        with torch.no_grad():
+            for images, masks in val_loader:
+                images = images.to(device, dtype=torch.float32)
+                masks = masks.to(device, dtype=torch.long)
+                outputs = model(images)
+                loss = combined_loss(outputs, masks)
+                val_loss += loss.item() * images.size(0)
+
+        val_loss = val_loss / len(val_loader.dataset)
+        scheduler.step(val_loss)
+
+        print(f'Epoch [{epoch + 1}/{num_epochs}], Train Loss: {epoch_loss:.4f}, Val Loss: {val_loss:.4f}')
+
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            torch.save(model.state_dict(), BEST_MODEL_PATH)
+            print(f'Model saved at epoch {epoch + 1} with val loss: {val_loss:.4f}')
+
+    print('finish')
