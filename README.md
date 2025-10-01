@@ -18,7 +18,11 @@
 - 适合数据量大的情况
 - 保留原始实现作为参考
 
-**详细对比请查看**: [BRANCH_INFO.md](BRANCH_INFO.md)
+**切换分支**: 
+```bash
+git checkout main                  # 分类方法
+git checkout regression-version    # 回归方法
+```
 
 ---
 
@@ -43,25 +47,9 @@ python predict_classification.py
 
 ## 📚 文档
 
-- [QUICKSTART.md](QUICKSTART.md) - 快速开始指南
-- [TRAINING_IMPROVEMENTS.md](TRAINING_IMPROVEMENTS.md) - 技术改进说明
-- [SOLUTION_SUMMARY.md](SOLUTION_SUMMARY.md) - 完整方案总结
-- [BRANCH_INFO.md](BRANCH_INFO.md) - ⭐ 分支对比说明
-- [CODE_REVIEW.md](CODE_REVIEW.md) - 代码审查报告
+- [QUICKSTART.md](QUICKSTART.md) - 快速开始指南(详细说明)
 
----
 
-## 🔄 切换分支
-
-### 切换到分类方法 (推荐)
-```bash
-git checkout main
-```
-
-### 切换到回归方法
-```bash
-git checkout regression-version
-```
 
 ---
 
@@ -79,17 +67,15 @@ git checkout regression-version
 ```
 .
 ├── train.py                    # 训练脚本
-├── predict_classification.py   # 预测脚本(分类方法)
+├── predict_classification.py   # 预测脚本
 ├── config.py                   # 配置文件
 ├── model.py                    # 模型定义
 ├── dataset.py                  # 数据集
 ├── evaluate.py                 # 评估脚本
 ├── check_environment.py        # 环境检查
-└── docs/                       # 文档目录
-    ├── QUICKSTART.md
-    ├── TRAINING_IMPROVEMENTS.md
-    ├── SOLUTION_SUMMARY.md
-    └── BRANCH_INFO.md
+├── train.sh / evaluate.sh      # Shell脚本
+├── README.md                   # 本文档
+└── QUICKSTART.md              # 详细教程
 ```
 
 ---
