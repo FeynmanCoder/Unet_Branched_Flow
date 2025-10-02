@@ -7,6 +7,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from pytorch_msssim import ssim
 import torchvision.transforms as T
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -68,24 +69,42 @@ def spectral_correlation_loss(pred, target):
     
     return F.mse_loss(pred_psd, target_psd)
 
-def evaluate(model, dataloader, criterion_pixel, device):
+def evaluate(model, dataloader, device):
     """
     Evaluate the model on the validation set using the combined loss.
     """
     model.eval()
     total_loss = 0
+    l1_loss_total = 0
+    ssim_loss_total = 0
+    
     with torch.no_grad():
         for inputs, targets in dataloader:
             inputs, targets = inputs.to(device), targets.to(device)
             outputs = model(inputs)
             
-            pixel_loss = criterion_pixel(outputs, targets)
-            physics_loss = spectral_correlation_loss(outputs, targets)
-            loss = config.LAMBDA_PIXEL * pixel_loss + config.LAMBDA_PHYSICS * physics_loss
+            # L1 Loss
+            l1_loss = F.l1_loss(outputs, targets)
+            
+            # SSIM Loss
+            # SSIM returns a value between -1 and 1, where 1 is perfect similarity.
+            # We want to maximize SSIM, so we minimize 1 - SSIM.
+            ssim_val = ssim(outputs, targets, data_range=1.0, size_average=True)
+            ssim_loss = 1 - ssim_val
+
+            loss = config.LAMBDA_PIXEL * l1_loss + config.LAMBDA_SSIM * ssim_loss
             
             total_loss += loss.item()
+            l1_loss_total += l1_loss.item()
+            ssim_loss_total += ssim_loss.item()
             
-    return total_loss / len(dataloader)
+    avg_total_loss = total_loss / len(dataloader)
+    avg_l1_loss = l1_loss_total / len(dataloader)
+    avg_ssim_loss = ssim_loss_total / len(dataloader)
+    
+    logging.info(f"Validation -> L1: {avg_l1_loss:.6f}, SSIM: {avg_ssim_loss:.6f}, Combined: {avg_total_loss:.6f}")
+    
+    return avg_total_loss
 
 def train():
     """
@@ -146,7 +165,8 @@ def train():
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, 'min', patience=5, factor=0.1
     )
-    criterion_pixel = nn.L1Loss()
+    # The pixel criterion is now calculated directly in the loop
+    # criterion_pixel = nn.L1Loss()
 
     # --- Training Loop ---
     best_val_loss = float('inf')
@@ -162,9 +182,15 @@ def train():
                 
                 outputs = model(inputs)
                 
-                pixel_loss = criterion_pixel(outputs, targets)
-                physics_loss = spectral_correlation_loss(outputs, targets)
-                total_loss = config.LAMBDA_PIXEL * pixel_loss + config.LAMBDA_PHYSICS * physics_loss
+                # L1 Loss
+                l1_loss = F.l1_loss(outputs, targets)
+                
+                # SSIM Loss
+                ssim_val = ssim(outputs, targets, data_range=1.0, size_average=True)
+                ssim_loss = 1 - ssim_val
+
+                # Combined Loss
+                total_loss = config.LAMBDA_PIXEL * l1_loss + config.LAMBDA_SSIM * ssim_loss
                 
                 optimizer.zero_grad()
                 total_loss.backward()
@@ -172,11 +198,10 @@ def train():
                 
                 pbar.update(inputs.size(0))
                 epoch_loss += total_loss.item()
-                pbar.set_postfix(**{'loss (batch)': total_loss.item()})
+                pbar.set_postfix(**{'loss (batch)': total_loss.item(), 'l1': l1_loss.item(), 'ssim': ssim_loss.item()})
 
         # --- Validation ---
-        avg_val_loss = evaluate(model, val_loader, criterion_pixel, device)
-        logging.info(f"Validation Combined Loss: {avg_val_loss:.6f}")
+        avg_val_loss = evaluate(model, val_loader, device)
         
         scheduler.step(avg_val_loss)
 
