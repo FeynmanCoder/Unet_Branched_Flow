@@ -148,26 +148,42 @@ def visualize_comparison(input_dir, output_dir, target_dir, num_samples=5):
         
         # 创建对比图
         if target_img is not None:
-            fig, axes = plt.subplots(1, 3, figsize=(15, 5))
-            axes[0].imshow(input_img, cmap='gray')
-            axes[0].set_title('输入: 粒子轨迹')
-            axes[0].axis('off')
+            fig, axes = plt.subplots(2, 2, figsize=(12, 12))
+            fig.suptitle(f'Comparison for {filename}', fontsize=16)
+
+            # 1. 输入轨迹
+            axes[0, 0].imshow(input_img, cmap='gray')
+            axes[0, 0].set_title('Input: Particle Trajectory')
+            axes[0, 0].axis('off')
             
-            axes[1].imshow(target_img, cmap='viridis')
-            axes[1].set_title('真实: 势能分布')
-            axes[1].axis('off')
+            # 2. 真实势能
+            im1 = axes[0, 1].imshow(target_img, cmap='viridis')
+            axes[0, 1].set_title('Ground Truth: Potential')
+            axes[0, 1].axis('off')
+            fig.colorbar(im1, ax=axes[0, 1], fraction=0.046, pad=0.04)
+
+            # 3. 预测势能
+            im2 = axes[1, 0].imshow(pred_img, cmap='viridis', vmin=im1.get_clim()[0], vmax=im1.get_clim()[1])
+            axes[1, 0].set_title('Prediction: Potential')
+            axes[1, 0].axis('off')
+            fig.colorbar(im2, ax=axes[1, 0], fraction=0.046, pad=0.04)
+
+            # 4. 计算并绘制相对误差
+            epsilon = 1e-8
+            relative_error = np.abs(pred_img - target_img) / (np.abs(target_img) + epsilon) * 100
             
-            axes[2].imshow(pred_img, cmap='viridis')
-            axes[2].set_title('预测: 势能分布')
-            axes[2].axis('off')
+            im3 = axes[1, 1].imshow(relative_error, cmap='inferno', vmin=0, vmax=100)
+            axes[1, 1].set_title('Relative Error (%) [Capped at 100%]')
+            axes[1, 1].axis('off')
+            fig.colorbar(im3, ax=axes[1, 1], fraction=0.046, pad=0.04)
         else:
             fig, axes = plt.subplots(1, 2, figsize=(10, 5))
             axes[0].imshow(input_img, cmap='gray')
-            axes[0].set_title('输入: 粒子轨迹')
+            axes[0].set_title('Input: Particle Trajectory')
             axes[0].axis('off')
             
             axes[1].imshow(pred_img, cmap='viridis')
-            axes[1].set_title('预测: 势能分布')
+            axes[1].set_title('Prediction: Potential')
             axes[1].axis('off')
         
         plt.tight_layout()
