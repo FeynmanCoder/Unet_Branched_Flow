@@ -6,11 +6,14 @@ import torch
 # Paths
 # ==============================================================================
 # Root directory for the project
-PROJECT_DIR = '.'
+# Use an absolute path for robustness, especially with different execution environments.
+PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # Root directory for the dataset
 # Use an absolute path for robustness, especially with different execution environments.
 DATA_DIR = '/lustre/home/2400011491/data/ai_train_data/data_2000'
+
+EVALUATION_OUTPUT_DIR = "/lustre/home/2400011491/work/ai_branched_flow/Unet_Branched_Flow/evaluation_output"
 
 # Subdirectories for training and testing data
 TRAIN_A_DIR = os.path.join(DATA_DIR, 'trainA')

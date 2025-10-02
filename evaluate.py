@@ -1,192 +1,201 @@
-# evaluate.py
-
+"""
+预测脚本 - 适配分类方法
+使用训练好的模型对测试图像进行预测
+"""
 import os
-import json
-import logging
-
-import numpy as np
+import sys
 import torch
+import numpy as np
 import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader
-import torchvision.transforms as T
+import albumentations as A
+from albumentations.pytorch import ToTensorV2
+from tqdm import tqdm
+from monai.networks.nets import UNet
+import argparse
 
-# 导入项目配置和自定义模块
-import config
-from dataset import ForceFieldDataset
-from model import UNet
-
-# 设置日志记录，方便观察脚本运行过程
-logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
-
-def denormalize(data, min_val, max_val):
-    """
-    将数据从 [-1, 1] 的范围反归一化到原始范围。
-    这是 dataset.py 中 normalize 函数的逆操作。
-    公式: original = (normalized + 1) * (max - min) / 2 + min
-    """
-    return (data + 1) * (max_val - min_val) / 2 + min_val
-
-def plot_results(target, prediction, sample_idx, output_dir):
-    """
-    为单个样本生成并保存详细的对比图和误差分布图。
-    
-    Args:
-        target (np.array): 真实的目标物理场数据 (已反归一化)。
-        prediction (np.array): 模型预测的物理场数据 (已反归一化)。
-        sample_idx (int): 当前样本的索引，用于命名文件。
-        output_dir (string): 保存图像的目录。
-    """
-    # --- 1. 计算误差 ---
-    # 绝对误差
-    absolute_error = np.abs(prediction - target)
-    
-    # 百分比误差
-    # 为避免分母为零，在分母上加一个很小的数 (epsilon)
-    epsilon = 1e-8
-    percentage_error = absolute_error / (np.abs(target) + epsilon) * 100
-    
-    # --- 2. 绘制四合一对比图 ---
-    fig, axes = plt.subplots(2, 2, figsize=(14, 12))
-    fig.suptitle(f'Sample #{sample_idx} - Prediction vs. Target Analysis', fontsize=16)
-
-    # 绘图用的色彩范围，基于真实值的范围
-    vmin, vmax = np.min(target), np.max(target)
-
-    # a) 真实场 (Ground Truth)
-    im1 = axes[0, 0].imshow(target, cmap='viridis', vmin=vmin, vmax=vmax)
-    axes[0, 0].set_title('Ground Truth (Target)')
-    axes[0, 0].axis('off')
-    fig.colorbar(im1, ax=axes[0, 0], fraction=0.046, pad=0.04)
-
-    # b) 预测场 (Prediction)
-    im2 = axes[0, 1].imshow(prediction, cmap='viridis', vmin=vmin, vmax=vmax)
-    axes[0, 1].set_title('Model Prediction')
-    axes[0, 1].axis('off')
-    fig.colorbar(im2, ax=axes[0, 1], fraction=0.046, pad=0.04)
-
-    # c) 绝对误差
-    im3 = axes[1, 0].imshow(absolute_error, cmap='inferno')
-    axes[1, 0].set_title('Absolute Error: |Prediction - Target|')
-    axes[1, 0].axis('off')
-    fig.colorbar(im3, ax=axes[1, 0], fraction=0.046, pad=0.04)
-
-    # d) 百分比误差 (为了可视化效果，将上限设为100%)
-    im4 = axes[1, 1].imshow(percentage_error, cmap='inferno', vmin=0, vmax=100)
-    axes[1, 1].set_title('Percentage Error (%) [Capped at 100%]')
-    axes[1, 1].axis('off')
-    fig.colorbar(im4, ax=axes[1, 1], fraction=0.046, pad=0.04)
-
-    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-    comparison_path = os.path.join(output_dir, f'sample_{sample_idx}_comparison.png')
-    plt.savefig(comparison_path)
-    plt.close(fig)
-    logging.info(f"Saved comparison plot to '{comparison_path}'")
-
-    # --- 3. 绘制百分比误差的分布直方图 ---
-    fig_hist, ax_hist = plt.subplots(figsize=(10, 6))
-    # 移除极端值以便更好地观察分布主体
-    clipped_errors = percentage_error[percentage_error < 200] # 只看200%以下的误差
-    ax_hist.hist(clipped_errors.flatten(), bins=100, range=(0, 100)) # 绘制0-100%范围的直方图
-    ax_hist.set_title(f'Sample #{sample_idx} - Percentage Error Distribution')
-    ax_hist.set_xlabel('Percentage Error (%)')
-    ax_hist.set_ylabel('Pixel Count')
-    ax_hist.grid(True, alpha=0.5)
-    
-    histogram_path = os.path.join(output_dir, f'sample_{sample_idx}_error_distribution.png')
-    plt.savefig(histogram_path)
-    plt.close(fig_hist)
-    logging.info(f"Saved error distribution plot to '{histogram_path}'")
+# 从 config.py 导入配置
+from config import (IMG_SIZE, NUM_CLASSES)
 
 
-def evaluate():
-    """
-    主评估函数：加载模型，对指定数量的样本进行可视化和分析。
-    """
-    # 确保评估结果的输出目录存在
-    os.makedirs(config.EVALUATION_OUTPUT_DIR, exist_ok=True)
-    
-    # 设置设备 (CPU 或 GPU)
-    device = torch.device(config.DEVICE)
-    logging.info(f"Using device: {device}")
+class SimpleDataset(torch.utils.data.Dataset):
+    def __init__(self, image_dir, transform=None):
+        self.image_dir = image_dir
+        self.transform = transform
+        self.images = sorted([f for f in os.listdir(image_dir) if f.endswith('.npy')])
 
-    # --- 1. 加载数据统计信息 ---
-    # 这是反归一化所必需的
-    try:
-        with open(config.STATS_FILE, 'r') as f:
-            stats = json.load(f)
-        target_min = stats['target']['min']
-        target_max = stats['target']['max']
-    except FileNotFoundError:
-        logging.error(f"Stats file not found at '{config.STATS_FILE}'. Please run train.py first to generate it.")
-        return
+    def __len__(self):
+        return len(self.images)
 
-    # --- 2. 准备数据集 ---
-    # 使用验证集进行评估
-    transform = T.Compose([T.Resize((config.IMG_SIZE, config.IMG_SIZE), antialias=True)])
-    val_dataset = ForceFieldDataset(
-        input_dir=config.VALIDATION_B_DIR,
-        target_dir=config.VALIDATION_A_DIR,
-        stats=stats,
-        transform=transform
-    )
-    val_loader = DataLoader(
-        val_dataset, 
-        batch_size=1, # 一次只处理一个样本，方便逐个分析
-        shuffle=False, 
-        num_workers=0 # 在Windows上设为0通常更稳定
-    )
-
-    # --- 3. 加载模型 ---
-    model = UNet(
-        n_channels=config.MODEL_N_CHANNELS,
-        n_classes=config.MODEL_N_CLASSES,
-        bilinear=config.MODEL_BILINEAR
-    ).to(device)
-
-    try:
-        model.load_state_dict(torch.load(config.BEST_MODEL_PATH, map_location=device))
-        logging.info(f"Model loaded from '{config.BEST_MODEL_PATH}'")
-    except FileNotFoundError:
-        logging.error(f"Model file not found at '{config.BEST_MODEL_PATH}'. Please ensure the model is trained and saved.")
-        return
+    def __getitem__(self, idx):
+        img_name = self.images[idx]
+        img_path = os.path.join(self.image_dir, img_name)
+        image = np.load(img_path)
         
-    model.eval() # 设置为评估模式
+        if self.transform:
+            transformed = self.transform(image=image)
+            image = transformed['image']
+        
+        return image, img_name
 
-    # --- 4. 循环处理样本并绘图 ---
+
+def predict(input_dir, output_dir, model_path):
+    """主预测函数"""
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f"使用设备: {device}")
+    
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # 加载模型
+    print(f"加载模型: {model_path}")
+    model = UNet(
+        in_channels=1,
+        out_channels=NUM_CLASSES,
+        spatial_dims=2,
+        channels=(32, 64, 128, 256, 320, 320),
+        strides=(2, 2, 2, 2, 2),
+    ).to(device)
+    
+    try:
+        model.load_state_dict(torch.load(model_path, map_location=device))
+        model.eval()
+        print("模型加载成功!")
+    except FileNotFoundError:
+        print(f"错误: 未找到模型文件 {model_path}")
+        print("请先运行 train.py 训练模型")
+        return
+    
+    # 准备数据
+    transform = A.Compose([
+        A.Resize(IMG_SIZE, IMG_SIZE),
+        ToTensorV2(),
+    ])
+    
+    # 使用TEST_B_DIR作为输入(粒子轨迹)
+    test_dataset = SimpleDataset(input_dir, transform=transform)
+    test_loader = DataLoader(test_dataset, batch_size=8, shuffle=False, num_workers=4)
+    
+    print(f"开始预测 {len(test_dataset)} 张图像...")
+    
+    # 预测
     with torch.no_grad():
-        # iter(val_loader) 将数据加载器变成一个迭代器
-        # 我们可以使用 next() 来逐个获取数据
-        data_iter = iter(val_loader)
-        for i in range(config.NUM_EVAL_IMAGES):
-            try:
-                inputs, targets = next(data_iter)
-            except StopIteration:
-                logging.warning(f"Ran out of samples in validation set. Only processed {i} images.")
-                break
+        for images, img_names in tqdm(test_loader, desc="预测进度"):
+            images = images.to(device, dtype=torch.float32)
+            outputs = model(images)  # (B, NUM_CLASSES, H, W)
+            
+            # 获取每个像素的预测类别
+            pred_classes = outputs.argmax(dim=1)  # (B, H, W)
+            
+            # 转换为连续值 [0, 1]
+            pred_values = pred_classes.float() / NUM_CLASSES
+            
+            # 保存每张图像
+            for i, img_name in enumerate(img_names):
+                pred_np = pred_values[i].cpu().numpy()
+                
+                # 保存为.npy文件
+                save_path = os.path.join(output_dir, f"pred_{img_name}")
+                np.save(save_path, pred_np)
+                
+                # 可选: 保存为图像以便可视化
+                save_img_path = os.path.join(output_dir, f"pred_{img_name.replace('.npy', '.png')}")
+                plt.imsave(save_img_path, pred_np, cmap='viridis')
+    
+    print(f"预测完成! 结果保存在: {output_dir}")
 
-            inputs = inputs.to(device)
-            
-            # 获取模型预测
-            prediction_tensor = model(inputs)
-            
-            # --- 5. 反归一化并转换为Numpy数组 ---
-            # 将Tensor从GPU移到CPU，并移除batch维度和channel维度
-            prediction_normalized = prediction_tensor.squeeze().cpu().numpy()
-            target_normalized = targets.squeeze().cpu().numpy()
-            
-            # 执行反归一化
-            prediction_denormalized = denormalize(prediction_normalized, target_min, target_max)
-            target_denormalized = denormalize(target_normalized, target_min, target_max)
 
-            # --- 6. 生成并保存可视化结果 ---
-            plot_results(
-                target=target_denormalized,
-                prediction=prediction_denormalized,
-                sample_idx=i,
-                output_dir=config.EVALUATION_OUTPUT_DIR
-            )
+def visualize_comparison(input_dir, output_dir, target_dir, num_samples=5):
+    """
+    可视化对比: 输入轨迹图 vs 真实势能图 vs 预测势能图
+    """
+    import glob
+    
+    print("\n生成对比可视化...")
+    
+    # 获取文件列表
+    input_files = sorted(glob.glob(os.path.join(input_dir, '*.npy')))[:num_samples]
+    
+    if not input_files:
+        print(f"未找到测试文件在: {input_dir}")
+        return
+    
+    comparison_dir = os.path.join(output_dir, 'comparisons')
+    os.makedirs(comparison_dir, exist_ok=True)
+    
+    for input_path in input_files:
+        filename = os.path.basename(input_path)
+        
+        # 加载图像
+        input_img = np.load(input_path)
+        
+        # 尝试加载真实标签
+        if target_dir:
+            target_path = os.path.join(target_dir, filename)
+            if os.path.exists(target_path):
+                target_img = np.load(target_path)
+            else:
+                target_img = None
+        else:
+            target_img = None
+
+        # 加载预测结果
+        pred_path = os.path.join(output_dir, f"pred_{filename}")
+        if os.path.exists(pred_path):
+            pred_img = np.load(pred_path)
+        else:
+            print(f"未找到预测文件: {pred_path}")
+            continue
+        
+        # 创建对比图
+        if target_img is not None:
+            fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+            axes[0].imshow(input_img, cmap='gray')
+            axes[0].set_title('输入: 粒子轨迹')
+            axes[0].axis('off')
             
-    logging.info("Evaluation finished.")
+            axes[1].imshow(target_img, cmap='viridis')
+            axes[1].set_title('真实: 势能分布')
+            axes[1].axis('off')
+            
+            axes[2].imshow(pred_img, cmap='viridis')
+            axes[2].set_title('预测: 势能分布')
+            axes[2].axis('off')
+        else:
+            fig, axes = plt.subplots(1, 2, figsize=(10, 5))
+            axes[0].imshow(input_img, cmap='gray')
+            axes[0].set_title('输入: 粒子轨迹')
+            axes[0].axis('off')
+            
+            axes[1].imshow(pred_img, cmap='viridis')
+            axes[1].set_title('预测: 势能分布')
+            axes[1].axis('off')
+        
+        plt.tight_layout()
+        save_path = os.path.join(comparison_dir, filename.replace('.npy', '_comparison.png'))
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        plt.close()
+        
+        print(f"保存对比图: {save_path}")
+    
+    print(f"对比可视化完成! 保存在: {comparison_dir}")
+
 
 if __name__ == '__main__':
-    evaluate()
+    parser = argparse.ArgumentParser(description="使用训练好的U-Net模型进行预测和评估。")
+    parser.add_argument('--input-dir', type=str, required=True, help='包含输入.npy文件的目录 (例如, 粒子轨迹数据)。')
+    parser.add_argument('--output-dir', type=str, required=True, help='保存预测结果的目录。')
+    parser.add_argument('--model-path', type=str, required=True, help='训练好的模型文件 (.pth) 的路径。')
+    parser.add_argument('--target-dir', type=str, default=None, help='(可选) 包含真实标签.npy文件的目录，用于生成对比图。')
+    parser.add_argument('--num-samples', type=int, default=10, help='用于可视化的样本数量。')
+
+    args = parser.parse_args()
+
+    # 执行预测
+    predict(args.input_dir, args.output_dir, args.model_path)
+    
+    # 如果提供了目标目录，则生成对比可视化
+    if args.target_dir:
+        try:
+            visualize_comparison(args.input_dir, args.output_dir, args.target_dir, args.num_samples)
+        except Exception as e:
+            print(f"可视化时出错: {e}")
